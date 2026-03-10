@@ -199,6 +199,22 @@ fn create_task(_state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[cfg(windows)]
+fn update_task(path: String, params: CreateTaskParams, state: State<AppState>) -> Result<(), String> {
+    let lock = state.0.lock().unwrap();
+    match lock.as_ref() {
+        Some(e) => e.update_task(&path, &params).map_err(|e| e.to_string()),
+        None    => Err("Run as Administrator.".into()),
+    }
+}
+
+#[tauri::command]
+#[cfg(not(windows))]
+fn update_task(_path: String, _state: State<AppState>) -> Result<(), String> {
+    Err("Windows only".into())
+}
+
+#[tauri::command]
 fn is_admin() -> bool {
     #[cfg(windows)]
     {
@@ -252,6 +268,7 @@ fn main() {
             export_task_xml,
             import_task_xml,
             create_task,
+            update_task,
             is_admin,
         ])
         .run(tauri::generate_context!())

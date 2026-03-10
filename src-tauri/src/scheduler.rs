@@ -106,6 +106,8 @@ pub struct TaskInfo {
     pub enabled:          bool,
 }
 
+fn default_priority() -> u32 { 7 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTaskParams {
     pub name:           String,
@@ -122,6 +124,46 @@ pub struct CreateTaskParams {
     pub run_level:      u32,
     pub hidden:         bool,
     pub enabled:        bool,
+
+    // ── Advanced / new fields (all #[serde(default)] for backwards compat) ──
+    #[serde(default)]
+    pub execution_time_limit: String,   // ISO 8601 duration; "PT0S" = unlimited
+    #[serde(default)]
+    pub repetition_interval:  String,   // ISO 8601 duration between repetitions
+    #[serde(default)]
+    pub repetition_duration:  String,   // ISO 8601 total repetition window; "" = indefinite
+    #[serde(default)]
+    pub stop_at_duration_end: bool,     // stop repeated task when duration window ends
+    #[serde(default)]
+    pub end_boundary:         String,   // ISO datetime when trigger expires
+    #[serde(default)]
+    pub delay:                String,   // boot/logon startup delay, ISO 8601
+    #[serde(default)]
+    pub random_delay:         String,   // random delay added before firing, ISO 8601
+    #[serde(default)]
+    pub weeks_interval:       u32,      // Weekly trigger: repeat every N weeks
+    #[serde(default)]
+    pub days_of_week:         u32,      // Weekly trigger bitmask: Sun=1,Mon=2,Tue=4,Wed=8,Thu=16,Fri=32,Sat=64
+    #[serde(default)]
+    pub months_of_year:       u32,      // Monthly trigger bitmask: Jan=1,Feb=2,…,Dec=2048
+    #[serde(default)]
+    pub days_of_month:        u32,      // Monthly trigger bitmask: bit0=day1,…,bit30=day31
+    #[serde(default)]
+    pub stop_existing:        bool,     // TASK_INSTANCES_STOP_EXISTING vs IGNORE_NEW
+    #[serde(default)]
+    pub delete_expired:       bool,     // delete task after it expires (DeleteExpiredTaskAfter)
+    #[serde(default = "default_priority")]
+    pub priority:             u32,      // thread priority 0–10 (default 7 = Normal)
+    #[serde(default)]
+    pub wake_to_run:          bool,     // WakeToRun setting
+    #[serde(default)]
+    pub run_only_if_network:  bool,     // RunOnlyIfNetworkAvailable
+    #[serde(default)]
+    pub run_only_if_idle:     bool,     // RunOnlyIfIdle
+    #[serde(default)]
+    pub disallow_on_batteries: bool,    // DisallowStartIfOnBatteries
+    #[serde(default)]
+    pub stop_on_batteries:    bool,     // StopIfGoingOnBatteries
 }
 
 // ── Engine ────────────────────────────────────────────────────────────────────
@@ -340,12 +382,24 @@ impl SchedulerEngine {
         }
 
         let settings = unsafe { defn.Settings()? };
+        let exec_limit = if p.execution_time_limit.is_empty() { "PT0S" } else { p.execution_time_limit.as_str() };
         unsafe {
             settings.SetEnabled(vb(p.enabled))?;
             settings.SetHidden(vb(p.hidden))?;
             settings.SetStartWhenAvailable(VARIANT_TRUE)?;
-            settings.SetMultipleInstances(TASK_INSTANCES_IGNORE_NEW)?;
-            settings.SetExecutionTimeLimit(&BSTR::from("PT0S"))?;
+            settings.SetMultipleInstances(
+                if p.stop_existing { TASK_INSTANCES_STOP_EXISTING } else { TASK_INSTANCES_IGNORE_NEW }
+            )?;
+            settings.SetExecutionTimeLimit(&BSTR::from(exec_limit))?;
+            settings.SetPriority(p.priority.clamp(0, 10) as i32)?;
+            settings.SetWakeToRun(vb(p.wake_to_run))?;
+            settings.SetRunOnlyIfNetworkAvailable(vb(p.run_only_if_network))?;
+            settings.SetDisallowStartIfOnBatteries(vb(p.disallow_on_batteries))?;
+            settings.SetStopIfGoingOnBatteries(vb(p.stop_on_batteries))?;
+            settings.SetRunOnlyIfIdle(vb(p.run_only_if_idle))?;
+            if p.delete_expired {
+                let _ = settings.SetDeleteExpiredTaskAfter(&BSTR::from("PT0S"));
+            }
         }
 
         let principal = unsafe { defn.Principal()? };
@@ -379,15 +433,97 @@ impl SchedulerEngine {
         if time_based && !p.start_datetime.is_empty() {
             unsafe { trigger.SetStartBoundary(&BSTR::from(p.start_datetime.as_str()))? };
         }
+
+        // End boundary (optional — applies to all trigger types)
+        if !p.end_boundary.is_empty() {
+            unsafe { let _ = trigger.SetEndBoundary(&BSTR::from(p.end_boundary.as_str())); }
+        }
+
+        // Repetition pattern (applies to all trigger types when interval is set)
+        if !p.repetition_interval.is_empty() {
+            unsafe {
+                if let Ok(rep) = trigger.Repetition() {
+                    let _ = rep.SetInterval(&BSTR::from(p.repetition_interval.as_str()));
+                    if !p.repetition_duration.is_empty() {
+                        let _ = rep.SetDuration(&BSTR::from(p.repetition_duration.as_str()));
+                    }
+                    let _ = rep.SetStopAtDurationEnd(vb(p.stop_at_duration_end));
+                }
+            }
+        }
+
+        // Daily trigger
         if ttype == TASK_TRIGGER_DAILY {
             if let Ok(dt) = trigger.cast::<IDailyTrigger>() {
                 unsafe { dt.SetDaysInterval(p.days_interval.max(1) as i16)? };
+                if !p.random_delay.is_empty() {
+                    unsafe { let _ = dt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
+                }
             }
         }
+
+        // Once (time) trigger random delay
+        if ttype == TASK_TRIGGER_TIME && !p.random_delay.is_empty() {
+            if let Ok(tt) = trigger.cast::<ITimeTrigger>() {
+                unsafe { let _ = tt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
+            }
+        }
+
+        // Weekly trigger
+        if ttype == TASK_TRIGGER_WEEKLY {
+            if let Ok(wt) = trigger.cast::<IWeeklyTrigger>() {
+                let wi = if p.weeks_interval > 0 { p.weeks_interval } else { p.days_interval.max(1) };
+                unsafe { wt.SetWeeksInterval(wi as i16)? };
+                if p.days_of_week > 0 {
+                    unsafe { let _ = wt.SetDaysOfWeek(p.days_of_week as i16); }
+                }
+                if !p.random_delay.is_empty() {
+                    unsafe { let _ = wt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
+                }
+            }
+        }
+
+        // Monthly trigger
+        if ttype == TASK_TRIGGER_MONTHLY {
+            if let Ok(mt) = trigger.cast::<IMonthlyTrigger>() {
+                if p.days_of_month > 0 {
+                    unsafe { let _ = mt.SetDaysOfMonth(p.days_of_month as i32); }
+                } else {
+                    // Convert 1-based day number to bitmask (bit 0 = day 1)
+                    let day_bit = 1i32 << ((p.days_interval.max(1).min(31) - 1) as i32);
+                    unsafe { let _ = mt.SetDaysOfMonth(day_bit); }
+                }
+                if p.months_of_year > 0 {
+                    unsafe { let _ = mt.SetMonthsOfYear(p.months_of_year as i16); }
+                }
+                if !p.random_delay.is_empty() {
+                    unsafe { let _ = mt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
+                }
+            }
+        }
+
+        // Boot trigger delay
+        if ttype == TASK_TRIGGER_BOOT && !p.delay.is_empty() {
+            if let Ok(bt) = trigger.cast::<IBootTrigger>() {
+                unsafe { let _ = bt.SetDelay(&BSTR::from(p.delay.as_str())); }
+            }
+        }
+
+        // Logon trigger delay
+        if ttype == TASK_TRIGGER_LOGON && !p.delay.is_empty() {
+            if let Ok(lt) = trigger.cast::<ILogonTrigger>() {
+                unsafe { let _ = lt.SetDelay(&BSTR::from(p.delay.as_str())); }
+            }
+        }
+
+        // Session state change trigger
         if ttype == TASK_TRIGGER_SESSION_STATE_CHANGE {
             if let Ok(sst) = trigger.cast::<ISessionStateChangeTrigger>() {
                 let ct = if p.trigger_type == "SessionUnlock" { TASK_SESSION_UNLOCK } else { TASK_SESSION_LOCK };
                 unsafe { sst.SetStateChange(ct)? };
+                if !p.delay.is_empty() {
+                    unsafe { let _ = sst.SetDelay(&BSTR::from(p.delay.as_str())); }
+                }
             }
         }
 
@@ -414,6 +550,12 @@ impl SchedulerEngine {
             )?;
         }
         Ok(())
+    }
+
+    // ── Update (delete + recreate) ────────────────────────────────────────────
+    pub fn update_task(&self, task_path: &str, p: &CreateTaskParams) -> Result<()> {
+        self.delete_task(task_path)?;
+        self.create_task(p)
     }
 }
 
