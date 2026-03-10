@@ -9,6 +9,7 @@ let filteredTasks  = [];
 let sortCol        = 'name';
 let sortDir        = 1;
 let selectedTask   = null;
+let _createTabIdx  = 0;     // tracks which tab is active in the Create Task modal
 
 // Debounce timer for search input
 let searchDebounce = null;
@@ -481,16 +482,30 @@ async function toggleTask(task) {
 }
 
 async function deleteTask(path, name) {
-  confirmAction(`Delete task "${name}"?\nThis cannot be undone.`, async () => {
-    try {
-      await invoke('delete_task', { path });
-      showToast('Task deleted', 'success');
-      closeDetail();
-      refreshAll();
-    } catch (err) {
-      showToast('Delete failed: ' + err, 'error');
-    }
-  });
+  openModal('🗑 Delete Task',
+    `<div style="padding:16px 16px 8px">
+       <div style="font-size:16px;font-weight:700;color:var(--red);margin-bottom:6px">${escHtml(name)}</div>
+       <div style="font-size:11px;color:var(--text3);font-family:monospace;word-break:break-all;margin-bottom:14px">${escHtml(path)}</div>
+       <p style="color:var(--text2);font-size:13px">This action <strong>cannot be undone</strong>. The task will be permanently removed from Windows Task Scheduler.</p>
+     </div>`,
+    `<button class="btn" id="del-cancel-btn" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-danger" id="del-confirm-btn">🗑 Delete</button>`);
+  setTimeout(() => {
+    const confirmBtn = document.getElementById('del-confirm-btn');
+    const cancelBtn  = document.getElementById('del-cancel-btn');
+    if (confirmBtn) confirmBtn.onclick = async () => {
+      closeModal();
+      try {
+        await invoke('delete_task', { path });
+        showToast('Task deleted', 'success');
+        closeDetail();
+        refreshAll();
+      } catch (err) {
+        showToast('Delete failed: ' + err, 'error');
+      }
+    };
+    if (cancelBtn) cancelBtn.focus();
+  }, 0);
 }
 
 // ── Confirm action modal ──────────────────────────────────────────────────────
@@ -505,27 +520,55 @@ function confirmAction(message, onConfirm) {
 }
 
 // Module-level variable to hold the last exported XML for clipboard copy
-let _lastExportedXml = '';
+let _lastExportedXml    = '';
+let _copyFeedbackTimer  = null;
+
+function syntaxHighlightXml(xml) {
+  // Escape first, then wrap tag names in colour spans
+  return escHtml(xml)
+    .replace(/(&lt;\/?)([\w:.]+)/g, '$1<span class="xml-tag-name">$2</span>')
+    .replace(/(&lt;!--[\s\S]*?--&gt;)/g, '<span class="xml-comment">$1</span>');
+}
 
 async function exportXml(path) {
   try {
     const xml = await invoke('export_task_xml', { path });
     _lastExportedXml = xml;
-    openModal('Exported XML', `<pre class="xml-pre">${escHtml(xml)}</pre>`,
+    openModal('＜/＞ Export XML',
+      `<div class="xml-box" id="xml-display">${syntaxHighlightXml(xml)}</div>`,
       `<button class="btn btn-primary" id="copy-xml-btn">📋 Copy</button>
+       <span id="copy-feedback" style="font-size:11px;color:var(--green);display:none">✅ Copied!</span>
+       <button class="btn" id="save-xml-btn">💾 Save as file</button>
        <button class="btn" onclick="closeModal()">Close</button>`);
-    // Wire up copy button safely after modal renders
     requestAnimationFrame(() => {
       const copyBtn = document.getElementById('copy-xml-btn');
-      if (copyBtn) copyBtn.onclick = () => copyXml(_lastExportedXml);
+      const savBtn  = document.getElementById('save-xml-btn');
+      const fb      = document.getElementById('copy-feedback');
+      if (copyBtn) copyBtn.onclick = () => {
+        navigator.clipboard.writeText(_lastExportedXml).then(() => {
+          if (fb) {
+            fb.style.display = 'inline';
+            if (_copyFeedbackTimer) clearTimeout(_copyFeedbackTimer);
+            _copyFeedbackTimer = setTimeout(() => {
+              fb.style.display = 'none';
+              _copyFeedbackTimer = null;
+            }, 2000);
+          }
+        });
+      };
+      if (savBtn) savBtn.onclick = () => {
+        const blob = new Blob([_lastExportedXml], { type: 'application/xml;charset=utf-8' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href     = url;
+        a.download = (path.split('\\').pop() || 'task') + '.xml';
+        a.click();
+        URL.revokeObjectURL(url);
+      };
     });
   } catch (err) {
     showToast('Export failed: ' + err, 'error');
   }
-}
-
-function copyXml(text) {
-  navigator.clipboard.writeText(text).then(() => showToast('Copied to clipboard', 'success'));
 }
 
 // ── Refresh all ───────────────────────────────────────────────────────────────
@@ -537,8 +580,25 @@ async function refreshAll() {
 
 // ── Create task dialog ────────────────────────────────────────────────────────
 async function openCreateDialog(prefill = {}) {
-  // Build folder options
-  let folderOptions = '<option value="">Select folder…</option>';
+  // Normalize trigger type to match Rust enum casing
+  const triggerNorm = {
+    'once':'Once','daily':'Daily','weekly':'Weekly','monthly':'Monthly',
+    'boot':'Boot','logon':'Logon','idle':'Idle',
+    'sessionlock':'SessionLock','sessionunlock':'SessionUnlock',
+  };
+  const prefillTrigger = triggerNorm[(prefill.trigger_type || '').toLowerCase()] || prefill.trigger_type || 'Once';
+
+  // Normalize action type — 'cmd' maps to 'custom'; 'powershell'/'cmd' with an
+  // explicit program path also map to 'custom' so the free-form fields are shown.
+  const actionNormMap = {
+    'program':'program','batch':'batch','cmd':'custom',
+    'python':'python','vbscript':'vbscript','custom':'custom',
+    'powershell': prefill.program ? 'custom' : 'powershell',
+  };
+  const prefillAction = actionNormMap[(prefill.action_type || '').toLowerCase()] || 'program';
+
+  // Build folder options — root is always available
+  let folderOptions = '<option value="\\">&#92; (Root)</option>';
   try {
     const folders = await invoke('get_folders');
     folderOptions += folders.map(f =>
@@ -547,146 +607,460 @@ async function openCreateDialog(prefill = {}) {
   } catch (_) {}
 
   const bodyHtml = `
-    <div class="form-tabs">
+    <div class="modal-tabs" id="create-tabs">
+      <div class="modal-tab active" data-tab="0">General</div>
+      <div class="modal-tab" data-tab="1">Trigger</div>
+      <div class="modal-tab" data-tab="2">Action</div>
+    </div>
+
+    <!-- ── Tab 0: General ── -->
+    <div class="modal-tab-panel active" id="tab-panel-0">
       <div class="form-group">
         <label>Task Name *</label>
-        <input type="text" id="cf-name" value="${escHtml(prefill.name || '')}" placeholder="MyTask" />
+        <input type="text" id="cf-name" class="form-control" value="${escHtml(prefill.name || '')}" placeholder="MyBackupTask" />
+        <div class="form-error" id="err-name">Name is required and cannot contain slashes</div>
       </div>
       <div class="form-group">
         <label>Folder</label>
-        <select id="cf-folder">${folderOptions}</select>
+        <select id="cf-folder" class="form-control">${folderOptions}</select>
       </div>
       <div class="form-group">
         <label>Description</label>
-        <textarea id="cf-desc" rows="2">${escHtml(prefill.description || '')}</textarea>
+        <textarea id="cf-desc" rows="3" class="form-control">${escHtml(prefill.description || '')}</textarea>
       </div>
-      <hr/>
-      <strong>Trigger</strong>
+      <div class="form-group">
+        <label>Run Level</label>
+        <select id="cf-run-level" class="form-control">
+          <option value="0" ${(prefill.run_level || 0) === 0 ? 'selected' : ''}>Standard User</option>
+          <option value="1" ${prefill.run_level === 1 ? 'selected' : ''}>Highest Privileges (Admin)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Run As User</label>
+        <input type="text" id="cf-run-as-user" class="form-control" value="${escHtml(prefill.run_as_user || '')}" placeholder="SYSTEM or leave blank for current user" />
+      </div>
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="cf-hidden" ${prefill.hidden ? 'checked' : ''} />
+          <label for="cf-hidden">Hidden task</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="cf-enabled" ${prefill.enabled !== false ? 'checked' : ''} />
+          <label for="cf-enabled">Enabled</label>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Tab 1: Trigger ── -->
+    <div class="modal-tab-panel" id="tab-panel-1">
       <div class="form-group">
         <label>Trigger Type</label>
-        <select id="cf-trigger-type" onchange="updateTriggerValueLabel()">
-          <option value="once"    ${prefill.trigger_type==='once'    ?'selected':''}>Once</option>
-          <option value="daily"   ${prefill.trigger_type==='daily'   ?'selected':''}>Daily</option>
-          <option value="weekly"  ${prefill.trigger_type==='weekly'  ?'selected':''}>Weekly</option>
-          <option value="boot"    ${prefill.trigger_type==='boot'    ?'selected':''}>At Boot</option>
-          <option value="logon"   ${prefill.trigger_type==='logon'   ?'selected':''}>At Logon</option>
+        <select id="cf-trigger-type" class="form-control" onchange="updateTriggerFields()">
+          <option value="Once"          ${prefillTrigger==='Once'          ?'selected':''}>Once — Run one time at a specific date/time</option>
+          <option value="Daily"         ${prefillTrigger==='Daily'         ?'selected':''}>Daily — Run every N days</option>
+          <option value="Weekly"        ${prefillTrigger==='Weekly'        ?'selected':''}>Weekly — Run every N weeks</option>
+          <option value="Monthly"       ${prefillTrigger==='Monthly'       ?'selected':''}>Monthly — Run on a specific day of the month</option>
+          <option value="Boot"          ${prefillTrigger==='Boot'          ?'selected':''}>Boot — Run at Windows startup</option>
+          <option value="Logon"         ${prefillTrigger==='Logon'         ?'selected':''}>Logon — Run when a user logs on</option>
+          <option value="Idle"          ${prefillTrigger==='Idle'          ?'selected':''}>Idle — Run when the system is idle</option>
+          <option value="SessionLock"   ${prefillTrigger==='SessionLock'   ?'selected':''}>Session Lock — Run when the session is locked</option>
+          <option value="SessionUnlock" ${prefillTrigger==='SessionUnlock' ?'selected':''}>Session Unlock — Run when the session is unlocked</option>
         </select>
       </div>
-      <div class="form-group" id="cf-trigger-value-group">
-        <label id="cf-trigger-value-label">Date/Time</label>
-        <input type="datetime-local" id="cf-trigger-value" value="${escHtml(prefill.trigger_value || '')}" />
+
+      <!-- Once -->
+      <div id="tf-once">
+        <div class="form-group">
+          <label>Date / Time *</label>
+          <input type="datetime-local" id="cf-datetime" class="form-control" value="${escHtml(prefill.trigger_value || '')}" />
+          <div class="form-error" id="err-datetime">A start date/time is required</div>
+        </div>
       </div>
-      <hr/>
-      <strong>Action</strong>
+
+      <!-- Daily -->
+      <div id="tf-daily" style="display:none">
+        <div class="form-group">
+          <label>Start Time *</label>
+          <input type="time" id="cf-daily-time" class="form-control" value="${prefillTrigger==='Daily' ? escHtml(prefill.trigger_value||'08:00') : '08:00'}" />
+          <div class="form-error" id="err-daily-time">Start time is required</div>
+        </div>
+        <div class="form-group">
+          <label>Every N Days</label>
+          <input type="number" id="cf-days-interval" class="form-control" min="1" max="365" value="${prefill.days_interval || 1}" />
+          <div class="form-hint">Task runs every <em>N</em> days starting at the chosen time</div>
+          <div class="form-error" id="err-days-interval">Days interval must be at least 1</div>
+        </div>
+      </div>
+
+      <!-- Weekly -->
+      <div id="tf-weekly" style="display:none">
+        <div class="form-group">
+          <label>Start Time *</label>
+          <input type="time" id="cf-weekly-time" class="form-control" value="${prefillTrigger==='Weekly' ? escHtml(prefill.trigger_value||'08:00') : '08:00'}" />
+        </div>
+        <div class="form-group">
+          <label>Repeat every N weeks</label>
+          <input type="number" id="cf-weeks-interval" class="form-control" min="1" max="52" value="${prefill.days_interval || 1}" />
+          <div class="form-hint">Task will run weekly starting at the chosen time</div>
+        </div>
+      </div>
+
+      <!-- Monthly -->
+      <div id="tf-monthly" style="display:none">
+        <div class="form-group">
+          <label>Start Time *</label>
+          <input type="time" id="cf-monthly-time" class="form-control" value="${prefillTrigger==='Monthly' ? escHtml(prefill.trigger_value||'08:00') : '08:00'}" />
+        </div>
+        <div class="form-group">
+          <label>Day of Month (1–31)</label>
+          <input type="number" id="cf-month-day" class="form-control" min="1" max="31" value="${prefill.days_interval || 1}" />
+          <div class="form-error" id="err-month-day">Day must be between 1 and 31</div>
+        </div>
+      </div>
+
+      <!-- Boot -->
+      <div id="tf-boot" style="display:none">
+        <div class="info-box info">This task will run once each time Windows starts, before any user logs in.</div>
+      </div>
+
+      <!-- Logon -->
+      <div id="tf-logon" style="display:none">
+        <div class="info-box info">This task will run each time any user logs on to the computer.</div>
+      </div>
+
+      <!-- Idle -->
+      <div id="tf-idle" style="display:none">
+        <div class="form-group">
+          <label>Wait for idle (minutes)</label>
+          <input type="number" id="cf-idle-min" class="form-control" min="1" max="999" value="${prefill.days_interval || 10}" />
+          <div class="form-hint">The task runs when the system has been idle for this many minutes</div>
+          <div class="form-error" id="err-idle">Idle time must be at least 1 minute</div>
+        </div>
+      </div>
+
+      <!-- SessionLock -->
+      <div id="tf-sessionlock" style="display:none">
+        <div class="info-box info">This task will run when the Windows session is locked (Win+L or screen lock).</div>
+      </div>
+
+      <!-- SessionUnlock -->
+      <div id="tf-sessionunlock" style="display:none">
+        <div class="info-box info">This task will run when the Windows session is unlocked (entering PIN or password).</div>
+      </div>
+    </div>
+
+    <!-- ── Tab 2: Action ── -->
+    <div class="modal-tab-panel" id="tab-panel-2">
       <div class="form-group">
         <label>Action Type</label>
-        <select id="cf-action-type">
-          <option value="program"    ${prefill.action_type==='program'    ?'selected':''}>Program/Script</option>
-          <option value="powershell" ${prefill.action_type==='powershell' ?'selected':''}>PowerShell</option>
-          <option value="cmd"        ${prefill.action_type==='cmd'        ?'selected':''}>CMD</option>
+        <select id="cf-action-type" class="form-control" onchange="updateActionFields()">
+          <option value="program"    ${prefillAction==='program'    ?'selected':''}>Program / Script — plain executable</option>
+          <option value="batch"      ${prefillAction==='batch'      ?'selected':''}>Batch File (.bat / .cmd)</option>
+          <option value="powershell" ${prefillAction==='powershell' ?'selected':''}>PowerShell Script (.ps1)</option>
+          <option value="python"     ${prefillAction==='python'     ?'selected':''}>Python Script (.py)</option>
+          <option value="vbscript"   ${prefillAction==='vbscript'   ?'selected':''}>VBScript (.vbs)</option>
+          <option value="custom"     ${prefillAction==='custom'     ?'selected':''}>Custom Command — free-form program + args</option>
         </select>
       </div>
-      <div class="form-group">
-        <label>Program / Script *</label>
-        <input type="text" id="cf-program" value="${escHtml(prefill.program || '')}" placeholder="C:\\Windows\\System32\\cmd.exe" />
+
+      <!-- Script path row (batch / powershell / python / vbscript) -->
+      <div id="af-script-group" style="display:none">
+        <div class="form-group">
+          <label>Script Path *</label>
+          <input type="text" id="cf-script-path" class="form-control" placeholder="C:\\Scripts\\myjob.bat" />
+          <div class="form-hint" id="af-path-hint">Tip: Use the full absolute path to your script. Network paths (\\\\server\\share\\script.bat) are also supported.</div>
+          <div class="form-error" id="err-script-path">Script path is required</div>
+        </div>
+        <div class="form-group">
+          <label>Additional Arguments <span style="font-weight:400;text-transform:none;color:var(--text3)">(optional)</span></label>
+          <input type="text" id="cf-extra-args" class="form-control" placeholder="" />
+        </div>
       </div>
-      <div class="form-group">
-        <label>Arguments</label>
-        <input type="text" id="cf-args" value="${escHtml(prefill.arguments || '')}" placeholder="/c echo hello" />
+
+      <!-- Program / Custom path row -->
+      <div id="af-program-group">
+        <div class="form-group">
+          <label>Program Path *</label>
+          <input type="text" id="cf-program" class="form-control" value="${escHtml(prefill.program || '')}" placeholder="C:\\Windows\\System32\\notepad.exe" />
+          <div class="form-error" id="err-program">Program path is required</div>
+        </div>
+        <div class="form-group">
+          <label>Arguments <span style="font-weight:400;text-transform:none;color:var(--text3)">(optional)</span></label>
+          <input type="text" id="cf-args" class="form-control" value="${escHtml(prefill.arguments || '')}" placeholder="/c echo hello" />
+        </div>
       </div>
+
+      <!-- Working directory (always shown) -->
       <div class="form-group">
-        <label>Working Directory</label>
-        <input type="text" id="cf-workdir" value="${escHtml(prefill.working_dir || '')}" placeholder="C:\\Temp" />
-      </div>
-      <div class="form-group">
-        <label><input type="checkbox" id="cf-enabled" ${prefill.enabled !== false ? 'checked' : ''} /> Enabled</label>
+        <label>Working Directory <span style="font-weight:400;text-transform:none;color:var(--text3)">(optional)</span></label>
+        <input type="text" id="cf-workdir" class="form-control" value="${escHtml(prefill.working_dir || '')}" placeholder="C:\\Scripts" />
       </div>
     </div>`;
 
   const footerHtml = `
-    <button class="btn btn-primary" onclick="submitCreateTask()">✅ Create Task</button>
+    <button class="btn" id="tab-prev-btn" onclick="createTabNav(-1)" style="display:none">◀ Previous</button>
+    <button class="btn btn-primary" id="tab-next-btn" onclick="createTabNav(1)">Next ▶</button>
+    <button class="btn btn-primary" id="create-submit-btn" onclick="submitCreateTask()" style="display:none">✅ Create Task</button>
     <button class="btn" onclick="closeModal()">Cancel</button>`;
 
-  openModal('Create New Task', bodyHtml, footerHtml);
-  updateTriggerValueLabel();
+  openModal('➕ New Task', bodyHtml, footerHtml);
+
+  // Initialize tab and field state
+  _createTabIdx = 0;
+  updateCreateTabUI();
+  updateTriggerFields();
+  updateActionFields();
+
+  // Tab click navigation
+  document.querySelectorAll('#create-tabs .modal-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      _createTabIdx = parseInt(tab.dataset.tab, 10);
+      updateCreateTabUI();
+    });
+  });
 }
 
-function updateTriggerValueLabel() {
-  const type  = document.getElementById('cf-trigger-type');
-  const group = document.getElementById('cf-trigger-value-group');
-  const label = document.getElementById('cf-trigger-value-label');
-  const input = document.getElementById('cf-trigger-value');
-  if (!type || !group || !label || !input) return;
+// Show the correct tab panel and update Prev/Next/Submit button visibility
+function updateCreateTabUI() {
+  document.querySelectorAll('.modal-tab-panel').forEach((p, i) => p.classList.toggle('active', i === _createTabIdx));
+  document.querySelectorAll('#create-tabs .modal-tab').forEach((t, i) => t.classList.toggle('active', i === _createTabIdx));
+  const prevBtn   = document.getElementById('tab-prev-btn');
+  const nextBtn   = document.getElementById('tab-next-btn');
+  const submitBtn = document.getElementById('create-submit-btn');
+  if (prevBtn)   prevBtn.style.display   = _createTabIdx > 0       ? '' : 'none';
+  if (nextBtn)   nextBtn.style.display   = _createTabIdx < 2       ? '' : 'none';
+  if (submitBtn) submitBtn.style.display = _createTabIdx === 2     ? '' : 'none';
+}
 
-  const val = type.value;
-  if (val === 'boot' || val === 'logon') {
-    group.style.display = 'none';
-  } else {
-    group.style.display = '';
-    if (val === 'daily' || val === 'weekly') {
-      label.textContent = 'Start Time (HH:MM or datetime)';
-      input.type        = 'time';
-    } else {
-      label.textContent = 'Date/Time';
-      input.type        = 'datetime-local';
-    }
+// Move to next (+1) or previous (-1) tab
+function createTabNav(delta) {
+  _createTabIdx = Math.max(0, Math.min(2, _createTabIdx + delta));
+  updateCreateTabUI();
+}
+
+// Show/hide trigger-specific sub-sections based on selected trigger type
+function updateTriggerFields() {
+  const typeEl = document.getElementById('cf-trigger-type');
+  if (!typeEl) return;
+  const val = typeEl.value.toLowerCase();
+  ['once','daily','weekly','monthly','boot','logon','idle','sessionlock','sessionunlock'].forEach(g => {
+    const el = document.getElementById('tf-' + g);
+    if (el) el.style.display = 'none';
+  });
+  const active = document.getElementById('tf-' + val);
+  if (active) active.style.display = '';
+}
+
+// Show/hide action-specific fields based on selected action type
+function updateActionFields() {
+  const typeEl = document.getElementById('cf-action-type');
+  if (!typeEl) return;
+  const val = typeEl.value;
+  const isScript = val === 'batch' || val === 'powershell' || val === 'python' || val === 'vbscript';
+  const scriptGrp  = document.getElementById('af-script-group');
+  const programGrp = document.getElementById('af-program-group');
+  if (scriptGrp)  scriptGrp.style.display  = isScript ? '' : 'none';
+  if (programGrp) programGrp.style.display = isScript ? 'none' : '';
+
+  // Update placeholder and hint based on script type
+  const scriptInput = document.getElementById('cf-script-path');
+  const hintEl      = document.getElementById('af-path-hint');
+  if (scriptInput && hintEl) {
+    const hints = {
+      batch:      { ph: 'C:\\Scripts\\myjob.bat', tip: 'Runs via cmd.exe /c. Use full absolute path.' },
+      powershell: { ph: 'C:\\Scripts\\myjob.ps1', tip: 'Runs with -ExecutionPolicy Bypass. Use full absolute path.' },
+      python:     { ph: 'C:\\Scripts\\myjob.py',  tip: 'python.exe must be in PATH or specify the full path to python.exe separately.' },
+      vbscript:   { ph: 'C:\\Scripts\\myjob.vbs', tip: 'Runs via wscript.exe. Use full absolute path.' },
+    };
+    const h = hints[val] || { ph: '', tip: 'Use the full absolute path to your script. Network paths (\\\\server\\share\\script) are supported.' };
+    scriptInput.placeholder = h.ph;
+    hintEl.textContent = h.tip ? 'Tip: ' + h.tip : '';
   }
 }
 
 async function submitCreateTask() {
-  const name            = document.getElementById('cf-name').value.trim();
-  const folder          = document.getElementById('cf-folder').value;
-  const description     = document.getElementById('cf-desc').value.trim();
-  const trigger_type_raw= document.getElementById('cf-trigger-type').value;
-  const trigger_value   = document.getElementById('cf-trigger-value').value;
-  const program         = document.getElementById('cf-program').value.trim();
-  const args            = document.getElementById('cf-args').value.trim();
-  const working_dir     = document.getElementById('cf-workdir').value.trim();
-  const enabled         = document.getElementById('cf-enabled').checked;
+  // ── Gather values ──────────────────────────────────────────────────────────
+  const nameEl    = document.getElementById('cf-name');
+  const name      = nameEl ? nameEl.value.trim() : '';
+  const folder    = (document.getElementById('cf-folder')      || {}).value    || '\\';
+  const desc      = (document.getElementById('cf-desc')        || {}).value.trim() || '';
+  const run_level = parseInt((document.getElementById('cf-run-level') || {}).value || '0', 10);
+  const run_as    = (document.getElementById('cf-run-as-user') || {}).value.trim() || '';
+  const hidden    = !!(document.getElementById('cf-hidden')    || {}).checked;
+  const enabled   = (document.getElementById('cf-enabled')     || { checked: true }).checked !== false;
 
-  if (!name)    { showToast('Task name is required', 'error'); return; }
-  if (!program) { showToast('Program/script is required', 'error'); return; }
+  const trigger_type = (document.getElementById('cf-trigger-type') || {}).value || 'Once';
+  const action_type  = (document.getElementById('cf-action-type')  || {}).value || 'program';
 
-  // Capitalize trigger type to match Rust enum values
-  const triggerTypeMap = {
-    'once': 'Once', 'daily': 'Daily', 'weekly': 'Weekly',
-    'boot': 'Boot', 'logon': 'Logon',
-  };
-  const trigger_type = triggerTypeMap[trigger_type_raw] || 'Once';
+  // ── Validation ─────────────────────────────────────────────────────────────
+  let valid = true;
 
-  // Build ISO 8601 datetime from form input
+  // Helper: mark a form-group with an error
+  function markErr(inputId, condition) {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    const grp = el.closest('.form-group');
+    if (grp) grp.classList.toggle('has-error', condition);
+    if (condition) valid = false;
+  }
+
+  const nameInvalid = !name || name.includes('/') || name.includes('\\');
+  if (nameInvalid) {
+    if (nameEl) { const g = nameEl.closest('.form-group'); if (g) g.classList.add('has-error'); }
+    valid = false;
+    if (_createTabIdx !== 0) { _createTabIdx = 0; updateCreateTabUI(); }
+  } else {
+    if (nameEl) { const g = nameEl.closest('.form-group'); if (g) g.classList.remove('has-error'); }
+  }
+
+  // ── Build trigger params ───────────────────────────────────────────────────
   let start_datetime = '';
-  if (trigger_value) {
-    if (trigger_value.includes('T')) {
-      // datetime-local input "YYYY-MM-DDTHH:MM" — ensure it has seconds
-      const parts = trigger_value.split('T');
-      const timePart = parts[1] || '00:00';
-      const timeWithSecs = timePart.length === 5 ? timePart + ':00' : timePart.slice(0, 8);
-      start_datetime = `${parts[0]}T${timeWithSecs}`;
-    } else {
-      // time input "HH:MM" or "HH:MM:SS" — use today's date
-      const today = new Date().toISOString().slice(0, 10);
-      const timePart = trigger_value.length === 5 ? trigger_value + ':00' : trigger_value.slice(0, 8);
-      start_datetime = `${today}T${timePart}`;
+  let days_interval  = 1;
+  const today  = new Date().toISOString().slice(0, 10);
+  const fmtTime = t => t ? (t.length === 5 ? t + ':00' : t.slice(0, 8)) : '00:00:00';
+
+  switch (trigger_type) {
+    case 'Once': {
+      const dt = (document.getElementById('cf-datetime') || {}).value || '';
+      if (!dt) {
+        markErr('cf-datetime', true);
+        if (_createTabIdx !== 1) { _createTabIdx = 1; updateCreateTabUI(); }
+      } else {
+        start_datetime = dt.includes('T') ? (dt.length === 16 ? dt + ':00' : dt) : `${today}T${fmtTime(dt)}`;
+        markErr('cf-datetime', false);
+      }
+      break;
+    }
+    case 'Daily': {
+      const t = (document.getElementById('cf-daily-time') || {}).value || '';
+      if (!t) {
+        markErr('cf-daily-time', true);
+        if (_createTabIdx !== 1) { _createTabIdx = 1; updateCreateTabUI(); }
+      } else {
+        start_datetime = `${today}T${fmtTime(t)}`;
+        markErr('cf-daily-time', false);
+      }
+      const di = parseInt((document.getElementById('cf-days-interval') || {}).value || '1', 10) || 1;
+      days_interval = Math.max(1, di);
+      markErr('cf-days-interval', di < 1);
+      break;
+    }
+    case 'Weekly': {
+      const t = (document.getElementById('cf-weekly-time') || {}).value || '08:00';
+      start_datetime = `${today}T${fmtTime(t)}`;
+      days_interval  = Math.max(1, parseInt((document.getElementById('cf-weeks-interval') || {}).value || '1', 10) || 1);
+      break;
+    }
+    case 'Monthly': {
+      const t   = (document.getElementById('cf-monthly-time') || {}).value || '08:00';
+      const day = parseInt((document.getElementById('cf-month-day') || {}).value || '1', 10) || 1;
+      start_datetime = `${today}T${fmtTime(t)}`;
+      days_interval  = Math.max(1, Math.min(31, day));
+      markErr('cf-month-day', day < 1 || day > 31);
+      break;
+    }
+    case 'Idle': {
+      const mins = parseInt((document.getElementById('cf-idle-min') || {}).value || '10', 10) || 10;
+      days_interval = Math.max(1, mins);
+      markErr('cf-idle-min', mins < 1);
+      break;
+    }
+    default: break; // Boot, Logon, SessionLock, SessionUnlock — no extra params needed
+  }
+
+  // ── Build action params ────────────────────────────────────────────────────
+  let program_path  = '';
+  let arguments_str = '';
+
+  const scriptPath = (document.getElementById('cf-script-path') || {}).value.trim() || '';
+  const extraArgs  = (document.getElementById('cf-extra-args')  || {}).value.trim() || '';
+
+  switch (action_type) {
+    case 'batch': {
+      if (!scriptPath) {
+        markErr('cf-script-path', true);
+        if (_createTabIdx !== 2) { _createTabIdx = 2; updateCreateTabUI(); }
+      } else {
+        program_path  = 'C:\\Windows\\System32\\cmd.exe';
+        arguments_str = '/c "' + scriptPath + '"' + (extraArgs ? ' ' + extraArgs : '');
+        markErr('cf-script-path', false);
+      }
+      break;
+    }
+    case 'powershell': {
+      if (!scriptPath) {
+        markErr('cf-script-path', true);
+        if (_createTabIdx !== 2) { _createTabIdx = 2; updateCreateTabUI(); }
+      } else {
+        program_path  = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+        arguments_str = '-NonInteractive -ExecutionPolicy Bypass -File "' + scriptPath + '"' + (extraArgs ? ' ' + extraArgs : '');
+        markErr('cf-script-path', false);
+      }
+      break;
+    }
+    case 'python': {
+      if (!scriptPath) {
+        markErr('cf-script-path', true);
+        if (_createTabIdx !== 2) { _createTabIdx = 2; updateCreateTabUI(); }
+      } else {
+        program_path  = 'python.exe';
+        arguments_str = '"' + scriptPath + '"' + (extraArgs ? ' ' + extraArgs : '');
+        markErr('cf-script-path', false);
+      }
+      break;
+    }
+    case 'vbscript': {
+      if (!scriptPath) {
+        markErr('cf-script-path', true);
+        if (_createTabIdx !== 2) { _createTabIdx = 2; updateCreateTabUI(); }
+      } else {
+        program_path  = 'C:\\Windows\\System32\\wscript.exe';
+        arguments_str = '"' + scriptPath + '"' + (extraArgs ? ' ' + extraArgs : '');
+        markErr('cf-script-path', false);
+      }
+      break;
+    }
+    case 'program':
+    case 'custom':
+    default: {
+      program_path  = (document.getElementById('cf-program') || {}).value.trim() || '';
+      arguments_str = (document.getElementById('cf-args')    || {}).value.trim() || '';
+      if (!program_path) {
+        markErr('cf-program', true);
+        if (_createTabIdx !== 2) { _createTabIdx = 2; updateCreateTabUI(); }
+      } else {
+        markErr('cf-program', false);
+      }
+      break;
     }
   }
 
+  const working_dir = (document.getElementById('cf-workdir') || {}).value.trim() || '';
+
+  if (!valid) {
+    showToast('Please fix the highlighted errors', 'error');
+    return;
+  }
+
+  // ── Submit ─────────────────────────────────────────────────────────────────
   try {
     await invoke('create_task', {
       params: {
         name,
-        folder_path: folder || '\\',
-        description,
-        author: '',
-        program_path: program,
-        arguments: args,
+        folder_path:   folder || '\\',
+        description:   desc,
+        author:        '',
+        program_path,
+        arguments:     arguments_str,
         working_dir,
         trigger_type,
         start_datetime,
-        days_interval: 1,
-        run_as_user: '',
-        run_level: 0,
-        hidden: false,
+        days_interval,
+        run_as_user:   run_as,
+        run_level,
+        hidden,
         enabled,
       }
     });
@@ -700,7 +1074,7 @@ async function submitCreateTask() {
 
 // ── Import XML dialog ─────────────────────────────────────────────────────────
 async function importXml() {
-  let folderOptions = '<option value="">Select folder…</option>';
+  let folderOptions = '<option value="\\">&#92; (Root — default)</option>';
   try {
     const folders = await invoke('get_folders');
     folderOptions += folders.map(f =>
@@ -711,44 +1085,98 @@ async function importXml() {
   const bodyHtml = `
     <div class="form-group">
       <label>Task Name *</label>
-      <input type="text" id="ix-name" placeholder="MyImportedTask" />
+      <input type="text" id="ix-name" class="form-control" placeholder="MyImportedTask" />
+      <div class="form-error" id="err-ix-name">Task name is required</div>
     </div>
     <div class="form-group">
       <label>Folder</label>
-      <select id="ix-folder">${folderOptions}</select>
+      <select id="ix-folder" class="form-control">${folderOptions}</select>
     </div>
+    <details class="form-group" style="cursor:pointer">
+      <summary style="font-size:11px;color:var(--text3);user-select:none;padding:2px 0">❓ What is Task XML?</summary>
+      <div class="info-box" style="margin-top:8px">
+        Task XML is the format used by Windows Task Scheduler to describe a task — its triggers, actions, settings, and security context.
+        You can get it by exporting an existing task (right-click a task in this app → ＜/＞ XML → Save as file, or use the Export XML button in the detail panel).
+      </div>
+    </details>
     <div class="form-group">
-      <label>Paste XML *</label>
-      <textarea id="ix-xml" rows="10" placeholder="Paste task XML here…" style="font-family:monospace;font-size:12px"></textarea>
+      <label>Paste XML *
+        <span id="ix-char-count" style="font-weight:400;text-transform:none;color:var(--text3);float:right">0 chars</span>
+      </label>
+      <textarea id="ix-xml" rows="10" class="form-control"
+                placeholder="Paste Windows Task Scheduler XML here…"
+                style="font-family:monospace;font-size:11px"
+                oninput="document.getElementById('ix-char-count').textContent=this.value.length+' chars'"></textarea>
+      <div class="form-error" id="err-ix-xml">XML content is required</div>
+      <div id="ix-validate-result" style="font-size:11px;margin-top:4px;display:none"></div>
     </div>`;
 
   const footerHtml = `
+    <button class="btn" onclick="validateImportXml()">🔍 Validate XML</button>
     <button class="btn btn-primary" onclick="submitImportXml()">📥 Import</button>
     <button class="btn" onclick="closeModal()">Cancel</button>`;
 
-  openModal('Import Task XML', bodyHtml, footerHtml);
+  openModal('📥 Import Task XML', bodyHtml, footerHtml);
+}
+
+function validateImportXml() {
+  const xmlEl    = document.getElementById('ix-xml');
+  const resultEl = document.getElementById('ix-validate-result');
+  if (!xmlEl || !resultEl) return;
+  const xml = xmlEl.value.trim();
+
+  function showResult(ok, msg) {
+    resultEl.style.display = '';
+    resultEl.innerHTML     = (ok ? '✅ ' : '❌ ') + escHtml(msg);
+    resultEl.style.color   = ok ? 'var(--green)' : 'var(--red)';
+  }
+
+  if (!xml) { showResult(false, 'No XML to validate'); return; }
+
+  const doc    = new DOMParser().parseFromString(xml, 'application/xml');
+  const errEl  = doc.querySelector('parsererror div') || doc.querySelector('parsererror');
+  if (errEl) {
+    showResult(false, 'Invalid XML — ' + (errEl.textContent.split('\n')[0] || 'parse error'));
+  } else {
+    showResult(true, 'XML is valid');
+  }
 }
 
 async function submitImportXml() {
-  const name   = document.getElementById('ix-name').value.trim();
-  const folder = document.getElementById('ix-folder').value;
-  const xml    = document.getElementById('ix-xml').value.trim();
+  const name   = (document.getElementById('ix-name')   || {}).value.trim()  || '';
+  const folder = (document.getElementById('ix-folder') || {}).value          || '\\';
+  const xml    = (document.getElementById('ix-xml')    || {}).value.trim()  || '';
 
-  if (!name)   { showToast('Task name is required', 'error'); return; }
-  if (!xml)    { showToast('XML is required', 'error'); return; }
+  let valid = true;
+  const nameEl = document.getElementById('ix-name');
+  if (nameEl) nameEl.closest('.form-group').classList.toggle('has-error', !name);
+  if (!name) valid = false;
 
-  // Validate XML client-side before sending to backend
+  const xmlEl = document.getElementById('ix-xml');
+  if (xmlEl)  xmlEl.closest('.form-group').classList.toggle('has-error', !xml);
+  if (!xml)   valid = false;
+
+  if (!valid) { showToast('Please fill in all required fields', 'error'); return; }
+
+  // Client-side XML validation before sending to backend
   const doc = new DOMParser().parseFromString(xml, 'application/xml');
   if (doc.querySelector('parsererror')) {
     showToast('Invalid XML — please check the pasted content', 'error');
+    const resultEl = document.getElementById('ix-validate-result');
+    if (resultEl) {
+      resultEl.style.display = '';
+      resultEl.innerHTML     = '❌ Invalid XML — use the Validate button to see details';
+      resultEl.style.color   = 'var(--red)';
+    }
     return;
   }
 
   try {
-    await invoke('import_task_xml', { folder, name, xml });
+    await invoke('import_task_xml', { folder: folder || '\\', name, xml });
     showToast('Task imported successfully!', 'success');
     closeModal();
-    refreshAll();
+    await refreshFolders();
+    await loadTasksForFolder(selectedFolder);
   } catch (err) {
     showToast('Import failed: ' + err, 'error');
   }
