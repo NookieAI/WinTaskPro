@@ -1158,6 +1158,18 @@ function daysOfMonthBitmask() {
 
 // ── Open edit dialog (pre-fill create dialog and switch to edit mode) ─────────
 async function openEditDialog(task) {
+  // Normalize the trigger display string (from trigger_str()) to the enum key used by the backend
+  const rawTrigger = task.triggers && task.triggers.length > 0 ? task.triggers[0] : 'Once';
+  const triggerDisplayMap = {
+    'once': 'Once', 'daily': 'Daily', 'weekly': 'Weekly', 'monthly': 'Monthly',
+    'at boot': 'Boot', 'boot': 'Boot',
+    'at logon': 'Logon', 'logon': 'Logon',
+    'on idle': 'Idle', 'idle': 'Idle',
+    'sessionlock': 'SessionLock', 'session lock': 'SessionLock',
+    'sessionunlock': 'SessionUnlock', 'session unlock': 'SessionUnlock',
+  };
+  const normalizedTrigger = triggerDisplayMap[rawTrigger.toLowerCase()] || 'Once';
+
   const prefill = {
     name:         task.name,
     folder:       task.folder,
@@ -1166,7 +1178,7 @@ async function openEditDialog(task) {
     run_level:    0,
     hidden:       task.hidden || false,
     enabled:      task.enabled !== false,
-    trigger_type: task.triggers && task.triggers.length > 0 ? task.triggers[0] : 'Once',
+    trigger_type: normalizedTrigger,
   };
 
   await openCreateDialog(prefill);

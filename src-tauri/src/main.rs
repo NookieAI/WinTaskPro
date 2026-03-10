@@ -210,7 +210,7 @@ fn update_task(path: String, params: CreateTaskParams, state: State<AppState>) -
 
 #[tauri::command]
 #[cfg(not(windows))]
-fn update_task(_path: String, _state: State<AppState>) -> Result<(), String> {
+fn update_task(_path: String, _params: CreateTaskParams, _state: State<AppState>) -> Result<(), String> {
     Err("Windows only".into())
 }
 
