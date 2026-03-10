@@ -230,7 +230,7 @@ function filterTasks() {
     const matchSearch = !search ||
       t.name.toLowerCase().includes(search) ||
       t.path.toLowerCase().includes(search) ||
-      (t.action && t.action.toLowerCase().includes(search));
+      (t.actions && t.actions.some(a => a.toLowerCase().includes(search)));
     const matchStatus = !status || t.status === status;
     return matchSearch && matchStatus;
   });
@@ -305,7 +305,8 @@ function renderTable() {
   if (emptyState) emptyState.style.display = 'none';
 
   tbody.innerHTML = filteredTasks.map((task, idx) => {
-    const actionText = task.action ? task.action.substring(0, 50) + (task.action.length > 50 ? '…' : '') : '—';
+    const firstAction = task.actions && task.actions.length > 0 ? task.actions[0] : null;
+    const actionText = firstAction ? firstAction.substring(0, 50) + (firstAction.length > 50 ? '…' : '') : '—';
     const triggers   = (task.triggers && task.triggers.length > 0)
       ? task.triggers.join(', ').substring(0, 40) : '—';
 
@@ -316,7 +317,7 @@ function renderTable() {
       </td>
       <td><span class="badge badge-${badgeClass(task.status)}">${escHtml(task.status || '—')}</span></td>
       <td class="cell-trunc" title="${escHtml(triggers)}">${escHtml(triggers)}</td>
-      <td class="cell-trunc" title="${escHtml(task.action || '')}">${escHtml(actionText)}</td>
+      <td class="cell-trunc" title="${escHtml(firstAction || '')}">${escHtml(actionText)}</td>
       <td>${escHtml(task.last_run || '—')}</td>
       <td>${escHtml(task.next_run || '—')}</td>
       <td class="${resultClass(task.last_result)}">${escHtml(task.last_result || '—')}</td>
@@ -608,28 +609,59 @@ function updateTriggerValueLabel() {
 }
 
 async function submitCreateTask() {
-  const name         = document.getElementById('cf-name').value.trim();
-  const folder       = document.getElementById('cf-folder').value;
-  const description  = document.getElementById('cf-desc').value.trim();
-  const trigger_type = document.getElementById('cf-trigger-type').value;
-  const trigger_value= document.getElementById('cf-trigger-value').value;
-  const action_type  = document.getElementById('cf-action-type').value;
-  const program      = document.getElementById('cf-program').value.trim();
-  const args         = document.getElementById('cf-args').value.trim();
-  const working_dir  = document.getElementById('cf-workdir').value.trim();
-  const enabled      = document.getElementById('cf-enabled').checked;
+  const name            = document.getElementById('cf-name').value.trim();
+  const folder          = document.getElementById('cf-folder').value;
+  const description     = document.getElementById('cf-desc').value.trim();
+  const trigger_type_raw= document.getElementById('cf-trigger-type').value;
+  const trigger_value   = document.getElementById('cf-trigger-value').value;
+  const program         = document.getElementById('cf-program').value.trim();
+  const args            = document.getElementById('cf-args').value.trim();
+  const working_dir     = document.getElementById('cf-workdir').value.trim();
+  const enabled         = document.getElementById('cf-enabled').checked;
 
   if (!name)    { showToast('Task name is required', 'error'); return; }
   if (!program) { showToast('Program/script is required', 'error'); return; }
 
+  // Capitalize trigger type to match Rust enum values
+  const triggerTypeMap = {
+    'once': 'Once', 'daily': 'Daily', 'weekly': 'Weekly',
+    'boot': 'Boot', 'logon': 'Logon',
+  };
+  const trigger_type = triggerTypeMap[trigger_type_raw] || 'Once';
+
+  // Build ISO 8601 datetime from form input
+  let start_datetime = '';
+  if (trigger_value) {
+    if (trigger_value.includes('T')) {
+      // datetime-local input "YYYY-MM-DDTHH:MM" — ensure it has seconds
+      const parts = trigger_value.split('T');
+      const timePart = parts[1] || '00:00';
+      const timeWithSecs = timePart.length === 5 ? timePart + ':00' : timePart.slice(0, 8);
+      start_datetime = `${parts[0]}T${timeWithSecs}`;
+    } else {
+      // time input "HH:MM" or "HH:MM:SS" — use today's date
+      const today = new Date().toISOString().slice(0, 10);
+      const timePart = trigger_value.length === 5 ? trigger_value + ':00' : trigger_value.slice(0, 8);
+      start_datetime = `${today}T${timePart}`;
+    }
+  }
+
   try {
     await invoke('create_task', {
       params: {
-        folder, name, description,
-        action_type, program,
+        name,
+        folder_path: folder || '\\',
+        description,
+        author: '',
+        program_path: program,
         arguments: args,
         working_dir,
-        trigger_type, trigger_value,
+        trigger_type,
+        start_datetime,
+        days_interval: 1,
+        run_as_user: '',
+        run_level: 0,
+        hidden: false,
         enabled,
       }
     });
