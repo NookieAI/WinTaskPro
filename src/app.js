@@ -10,6 +10,7 @@ let sortCol        = 'name';
 let sortDir        = 1;
 let selectedTask   = null;
 let _createTabIdx  = 0;     // tracks which tab is active in the Create Task modal
+let _editTaskPath  = null;  // non-null when editing an existing task
 
 // Debounce timer for search input
 let searchDebounce = null;
@@ -420,6 +421,7 @@ function openDetail(task) {
   const stopBtn   = document.getElementById('d-stop-btn');
   const toggleBtn = document.getElementById('d-toggle-btn');
   const xmlBtn    = document.getElementById('d-xml-btn');
+  const editBtn   = document.getElementById('d-edit-btn');
   const deleteBtn = document.getElementById('d-delete-btn');
 
   runBtn.onclick    = () => runTask(task.path);
@@ -427,6 +429,7 @@ function openDetail(task) {
   toggleBtn.onclick = () => toggleTask(task);
   toggleBtn.textContent = task.enabled ? '⏸ Disable' : '▶ Enable';
   xmlBtn.onclick    = () => exportXml(task.path);
+  if (editBtn) editBtn.onclick = () => openEditDialog(task);
   deleteBtn.onclick = () => deleteTask(task.path, task.name);
 
   document.getElementById('detail-panel').classList.remove('panel-hidden');
@@ -580,6 +583,8 @@ async function refreshAll() {
 
 // ── Create task dialog ────────────────────────────────────────────────────────
 async function openCreateDialog(prefill = {}) {
+  _editTaskPath = null;   // reset edit mode; openEditDialog will set this after
+
   // Normalize trigger type to match Rust enum casing
   const triggerNorm = {
     'once':'Once','daily':'Daily','weekly':'Weekly','monthly':'Monthly',
@@ -611,6 +616,7 @@ async function openCreateDialog(prefill = {}) {
       <div class="modal-tab active" data-tab="0">General</div>
       <div class="modal-tab" data-tab="1">Trigger</div>
       <div class="modal-tab" data-tab="2">Action</div>
+      <div class="modal-tab" data-tab="3">Advanced</div>
     </div>
 
     <!-- ── Tab 0: General ── -->
@@ -797,6 +803,204 @@ async function openCreateDialog(prefill = {}) {
         <label>Working Directory <span style="font-weight:400;text-transform:none;color:var(--text3)">(optional)</span></label>
         <input type="text" id="cf-workdir" class="form-control" value="${escHtml(prefill.working_dir || '')}" placeholder="C:\\Scripts" />
       </div>
+    </div>
+
+    <!-- ── Tab 3: Advanced ── -->
+    <div class="modal-tab-panel" id="tab-panel-3">
+
+      <div style="font-weight:600;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:0 0 6px">Timing / Limits</div>
+
+      <div class="form-group">
+        <label>Execution Time Limit</label>
+        <select id="cf-exec-limit" class="form-control" onchange="toggleCustomInput('cf-exec-limit','cf-exec-limit-custom')">
+          <option value="PT0S">Unlimited</option>
+          <option value="PT1H">1 hour</option>
+          <option value="PT2H">2 hours</option>
+          <option value="PT4H">4 hours</option>
+          <option value="PT8H">8 hours</option>
+          <option value="PT12H">12 hours</option>
+          <option value="PT24H">24 hours</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <input type="text" id="cf-exec-limit-custom" class="form-control" placeholder="ISO 8601, e.g. PT1H30M" style="display:none;margin-top:4px" />
+      </div>
+
+      <div class="form-group">
+        <label>Random Delay</label>
+        <select id="cf-random-delay" class="form-control" onchange="toggleCustomInput('cf-random-delay','cf-random-delay-custom')">
+          <option value="">None</option>
+          <option value="PT1M">1 minute</option>
+          <option value="PT5M">5 minutes</option>
+          <option value="PT10M">10 minutes</option>
+          <option value="PT30M">30 minutes</option>
+          <option value="PT1H">1 hour</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <input type="text" id="cf-random-delay-custom" class="form-control" placeholder="ISO 8601, e.g. PT10M" style="display:none;margin-top:4px" />
+      </div>
+
+      <div class="form-group">
+        <label>Trigger Expiry (End Boundary)</label>
+        <input type="datetime-local" id="cf-end-boundary" class="form-control" />
+        <div class="form-hint">Leave blank for no expiry</div>
+      </div>
+
+      <div style="font-weight:600;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:8px 0 6px">Repetition</div>
+
+      <div class="form-group">
+        <label>Repeat Every</label>
+        <select id="cf-rep-interval" class="form-control" onchange="toggleCustomInput('cf-rep-interval','cf-rep-interval-custom')">
+          <option value="">None (no repetition)</option>
+          <option value="PT5M">5 minutes</option>
+          <option value="PT10M">10 minutes</option>
+          <option value="PT15M">15 minutes</option>
+          <option value="PT30M">30 minutes</option>
+          <option value="PT1H">1 hour</option>
+          <option value="PT2H">2 hours</option>
+          <option value="PT4H">4 hours</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <input type="text" id="cf-rep-interval-custom" class="form-control" placeholder="ISO 8601, e.g. PT30M" style="display:none;margin-top:4px" />
+      </div>
+
+      <div class="form-group">
+        <label>Repetition Duration</label>
+        <select id="cf-rep-duration" class="form-control" onchange="toggleCustomInput('cf-rep-duration','cf-rep-duration-custom')">
+          <option value="">Indefinitely</option>
+          <option value="PT1H">1 hour</option>
+          <option value="PT4H">4 hours</option>
+          <option value="PT8H">8 hours</option>
+          <option value="PT12H">12 hours</option>
+          <option value="PT24H">24 hours</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <input type="text" id="cf-rep-duration-custom" class="form-control" placeholder="ISO 8601, e.g. PT8H" style="display:none;margin-top:4px" />
+      </div>
+
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="cf-rep-stop-end" />
+          <label for="cf-rep-stop-end">Stop task at end of repetition duration</label>
+        </div>
+      </div>
+
+      <!-- Weekly days-of-week row (shown only when trigger = Weekly) -->
+      <div id="adv-weekly-row" class="form-group" style="display:none">
+        <label>Days of Week</label>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px">
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-dow-sun" /> Sun</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-dow-mon" /> Mon</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-dow-tue" /> Tue</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-dow-wed" /> Wed</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-dow-thu" /> Thu</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-dow-fri" /> Fri</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-dow-sat" /> Sat</label>
+        </div>
+      </div>
+
+      <!-- Monthly months-of-year row (shown only when trigger = Monthly) -->
+      <div id="adv-monthly-row" class="form-group" style="display:none">
+        <label>Months of Year</label>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-moy-jan" /> Jan</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-moy-feb" /> Feb</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-moy-mar" /> Mar</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-moy-apr" /> Apr</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-moy-may" /> May</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-moy-jun" /> Jun</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-moy-jul" /> Jul</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-moy-aug" /> Aug</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-moy-sep" /> Sep</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-moy-oct" /> Oct</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-moy-nov" /> Nov</label>
+          <label style="display:flex;align-items:center;gap:4px;font-weight:400"><input type="checkbox" id="cf-moy-dec" /> Dec</label>
+        </div>
+      </div>
+
+      <div id="adv-monthly-days-row" class="form-group" style="display:none">
+        <label>Days of Month</label>
+        <input type="text" id="cf-days-of-month" class="form-control" placeholder="e.g. 1, 15, 28  (comma-separated, 1–31)" />
+        <div class="form-hint">Overrides the "Day of Month" field in the Trigger tab when set</div>
+      </div>
+
+      <!-- Boot / Logon / Session delay row (shown when trigger requires delay) -->
+      <div id="adv-boot-delay-row" class="form-group" style="display:none">
+        <label>Startup Delay</label>
+        <select id="cf-boot-delay" class="form-control" onchange="toggleCustomInput('cf-boot-delay','cf-boot-delay-custom')">
+          <option value="">No delay</option>
+          <option value="PT30S">30 seconds</option>
+          <option value="PT1M">1 minute</option>
+          <option value="PT5M">5 minutes</option>
+          <option value="PT10M">10 minutes</option>
+          <option value="PT30M">30 minutes</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <input type="text" id="cf-boot-delay-custom" class="form-control" placeholder="ISO 8601, e.g. PT5M" style="display:none;margin-top:4px" />
+      </div>
+
+      <div style="font-weight:600;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:8px 0 6px">Conditions</div>
+
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="cf-wake-to-run" />
+          <label for="cf-wake-to-run">Wake computer to run this task</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="cf-run-on-network" />
+          <label for="cf-run-on-network">Only run if network is available</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="cf-run-on-idle" />
+          <label for="cf-run-on-idle">Only run if computer is idle</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="cf-no-battery-start" />
+          <label for="cf-no-battery-start">Don't start on battery power</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="cf-stop-on-battery" />
+          <label for="cf-stop-on-battery">Stop if switching to battery power</label>
+        </div>
+      </div>
+
+      <div style="font-weight:600;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:8px 0 6px">Settings</div>
+
+      <div class="form-group">
+        <label>Thread Priority</label>
+        <select id="cf-priority" class="form-control">
+          <option value="0">0 — Critical (highest CPU priority)</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+          <option value="7" selected>7 — Normal (default)</option>
+          <option value="8">8</option>
+          <option value="9">9</option>
+          <option value="10">10 — Lowest</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="cf-stop-existing" />
+          <label for="cf-stop-existing">Stop existing instance if task is already running</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="cf-delete-expired" />
+          <label for="cf-delete-expired">Delete task if not scheduled to run again</label>
+        </div>
+      </div>
     </div>`;
 
   const footerHtml = `
@@ -830,13 +1034,13 @@ function updateCreateTabUI() {
   const nextBtn   = document.getElementById('tab-next-btn');
   const submitBtn = document.getElementById('create-submit-btn');
   if (prevBtn)   prevBtn.style.display   = _createTabIdx > 0       ? '' : 'none';
-  if (nextBtn)   nextBtn.style.display   = _createTabIdx < 2       ? '' : 'none';
-  if (submitBtn) submitBtn.style.display = _createTabIdx === 2     ? '' : 'none';
+  if (nextBtn)   nextBtn.style.display   = _createTabIdx < 3       ? '' : 'none';
+  if (submitBtn) submitBtn.style.display = _createTabIdx === 3     ? '' : 'none';
 }
 
 // Move to next (+1) or previous (-1) tab
 function createTabNav(delta) {
-  _createTabIdx = Math.max(0, Math.min(2, _createTabIdx + delta));
+  _createTabIdx = Math.max(0, Math.min(3, _createTabIdx + delta));
   updateCreateTabUI();
 }
 
@@ -851,6 +1055,21 @@ function updateTriggerFields() {
   });
   const active = document.getElementById('tf-' + val);
   if (active) active.style.display = '';
+
+  // Show/hide Advanced tab sections based on trigger type
+  const isBootLogon = ['boot','logon','sessionlock','sessionunlock'].includes(val);
+  const isWeekly    = val === 'weekly';
+  const isMonthly   = val === 'monthly';
+
+  const bootDelayRow   = document.getElementById('adv-boot-delay-row');
+  const weeklyRow      = document.getElementById('adv-weekly-row');
+  const monthlyRow     = document.getElementById('adv-monthly-row');
+  const monthlyDaysRow = document.getElementById('adv-monthly-days-row');
+
+  if (bootDelayRow)   bootDelayRow.style.display   = isBootLogon ? '' : 'none';
+  if (weeklyRow)      weeklyRow.style.display       = isWeekly   ? '' : 'none';
+  if (monthlyRow)     monthlyRow.style.display      = isMonthly  ? '' : 'none';
+  if (monthlyDaysRow) monthlyDaysRow.style.display  = isMonthly  ? '' : 'none';
 }
 
 // Show/hide action-specific fields based on selected action type
@@ -878,6 +1097,98 @@ function updateActionFields() {
     scriptInput.placeholder = h.ph;
     hintEl.textContent = h.tip ? 'Tip: ' + h.tip : '';
   }
+}
+
+// ── Advanced field helpers ────────────────────────────────────────────────────
+
+// Toggle a custom text input visible/hidden based on a select's value being 'custom'
+function toggleCustomInput(selectId, customId) {
+  const sel = document.getElementById(selectId);
+  const inp = document.getElementById(customId);
+  if (sel && inp) inp.style.display = sel.value === 'custom' ? '' : 'none';
+}
+
+// Return the ISO 8601 duration from a select+custom-input combo
+function parseDurationSelect(selectId, customId) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return '';
+  if (sel.value === 'custom') {
+    const custom = document.getElementById(customId);
+    return custom ? custom.value.trim() : '';
+  }
+  return sel.value;
+}
+
+// Build days-of-week bitmask: Sun=1, Mon=2, Tue=4, Wed=8, Thu=16, Fri=32, Sat=64
+function daysOfWeekBitmask() {
+  const days = ['sun','mon','tue','wed','thu','fri','sat'];
+  const bits = [1, 2, 4, 8, 16, 32, 64];
+  let mask = 0;
+  days.forEach((d, i) => {
+    const cb = document.getElementById('cf-dow-' + d);
+    if (cb && cb.checked) mask |= bits[i];
+  });
+  return mask;
+}
+
+// Build months-of-year bitmask: Jan=1, Feb=2, Mar=4, …, Dec=2048
+function monthsOfYearBitmask() {
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  let mask = 0;
+  months.forEach((m, i) => {
+    const cb = document.getElementById('cf-moy-' + m);
+    if (cb && cb.checked) mask |= (1 << i);
+  });
+  return mask;
+}
+
+// Build days-of-month bitmask from comma-separated day numbers: bit0=day1, bit30=day31
+function daysOfMonthBitmask() {
+  const el = document.getElementById('cf-days-of-month');
+  if (!el) return 0;
+  const val = el.value.trim();
+  if (!val) return 0;
+  let mask = 0;
+  val.split(',').forEach(part => {
+    const day = parseInt(part.trim(), 10);
+    if (day >= 1 && day <= 31) mask |= (1 << (day - 1));
+  });
+  return mask;
+}
+
+// ── Open edit dialog (pre-fill create dialog and switch to edit mode) ─────────
+async function openEditDialog(task) {
+  // Normalize the trigger display string (from trigger_str()) to the enum key used by the backend
+  const rawTrigger = task.triggers && task.triggers.length > 0 ? task.triggers[0] : 'Once';
+  const triggerDisplayMap = {
+    'once': 'Once', 'daily': 'Daily', 'weekly': 'Weekly', 'monthly': 'Monthly',
+    'at boot': 'Boot', 'boot': 'Boot',
+    'at logon': 'Logon', 'logon': 'Logon',
+    'on idle': 'Idle', 'idle': 'Idle',
+    'sessionlock': 'SessionLock', 'session lock': 'SessionLock',
+    'sessionunlock': 'SessionUnlock', 'session unlock': 'SessionUnlock',
+  };
+  const normalizedTrigger = triggerDisplayMap[rawTrigger.toLowerCase()] || 'Once';
+
+  const prefill = {
+    name:         task.name,
+    folder:       task.folder,
+    description:  task.description || '',
+    run_as_user:  task.run_as_user || '',
+    run_level:    0,
+    hidden:       task.hidden || false,
+    enabled:      task.enabled !== false,
+    trigger_type: normalizedTrigger,
+  };
+
+  await openCreateDialog(prefill);
+
+  // Switch dialog to edit mode after it's open
+  _editTaskPath = task.path;
+  const titleEl   = document.getElementById('modal-title');
+  const submitBtn = document.getElementById('create-submit-btn');
+  if (titleEl)   titleEl.textContent   = '✏️ Edit Task';
+  if (submitBtn) submitBtn.textContent = '💾 Save Changes';
 }
 
 async function submitCreateTask() {
@@ -1045,30 +1356,63 @@ async function submitCreateTask() {
   }
 
   // ── Submit ─────────────────────────────────────────────────────────────────
+  // Read all advanced params
+  const endBoundaryRaw = (document.getElementById('cf-end-boundary') || {}).value || '';
+  const endBoundary    = endBoundaryRaw.length === 16 ? endBoundaryRaw + ':00' : endBoundaryRaw;
+
+  const advancedParams = {
+    execution_time_limit:  parseDurationSelect('cf-exec-limit',  'cf-exec-limit-custom'),
+    repetition_interval:   parseDurationSelect('cf-rep-interval','cf-rep-interval-custom'),
+    repetition_duration:   parseDurationSelect('cf-rep-duration','cf-rep-duration-custom'),
+    stop_at_duration_end:  !!(document.getElementById('cf-rep-stop-end')    || {}).checked,
+    end_boundary:          endBoundary,
+    delay:                 parseDurationSelect('cf-boot-delay',  'cf-boot-delay-custom'),
+    random_delay:          parseDurationSelect('cf-random-delay','cf-random-delay-custom'),
+    weeks_interval:        parseInt((document.getElementById('cf-weeks-interval') || {}).value || '0', 10) || 0,
+    days_of_week:          daysOfWeekBitmask(),
+    months_of_year:        monthsOfYearBitmask(),
+    days_of_month:         daysOfMonthBitmask(),
+    stop_existing:         !!(document.getElementById('cf-stop-existing')   || {}).checked,
+    delete_expired:        !!(document.getElementById('cf-delete-expired')  || {}).checked,
+    priority:              parseInt((document.getElementById('cf-priority')  || {}).value || '7', 10),
+    wake_to_run:           !!(document.getElementById('cf-wake-to-run')     || {}).checked,
+    run_only_if_network:   !!(document.getElementById('cf-run-on-network')  || {}).checked,
+    run_only_if_idle:      !!(document.getElementById('cf-run-on-idle')     || {}).checked,
+    disallow_on_batteries: !!(document.getElementById('cf-no-battery-start')|| {}).checked,
+    stop_on_batteries:     !!(document.getElementById('cf-stop-on-battery') || {}).checked,
+  };
+
+  const taskParams = {
+    name,
+    folder_path:   folder || '\\',
+    description:   desc,
+    author:        '',
+    program_path,
+    arguments:     arguments_str,
+    working_dir,
+    trigger_type,
+    start_datetime,
+    days_interval,
+    run_as_user:   run_as,
+    run_level,
+    hidden,
+    enabled,
+    ...advancedParams,
+  };
+
   try {
-    await invoke('create_task', {
-      params: {
-        name,
-        folder_path:   folder || '\\',
-        description:   desc,
-        author:        '',
-        program_path,
-        arguments:     arguments_str,
-        working_dir,
-        trigger_type,
-        start_datetime,
-        days_interval,
-        run_as_user:   run_as,
-        run_level,
-        hidden,
-        enabled,
-      }
-    });
-    showToast('Task created successfully!', 'success');
+    if (_editTaskPath) {
+      await invoke('update_task', { path: _editTaskPath, params: taskParams });
+      showToast('Task updated successfully!', 'success');
+    } else {
+      await invoke('create_task', { params: taskParams });
+      showToast('Task created successfully!', 'success');
+    }
+    _editTaskPath = null;
     closeModal();
     refreshAll();
   } catch (err) {
-    showToast('Create failed: ' + err, 'error');
+    showToast((_editTaskPath ? 'Update' : 'Create') + ' failed: ' + err, 'error');
   }
 }
 
