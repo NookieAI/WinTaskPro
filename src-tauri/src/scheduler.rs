@@ -1,3 +1,4 @@
+#![cfg(windows)]
 #![allow(non_snake_case)]
 use serde::{Deserialize, Serialize};
 use windows::{
@@ -61,13 +62,13 @@ fn fmt_code(code: i32) -> String {
 
 fn ole_date(d: f64) -> String {
     if d < 1.0 { return "Never".into(); }
-    let unix     = (d - 25569.0) * 86400.0;
-    let unix_i   = unix as i64;
-    let s  = ((unix_i % 60) + 60) % 60;
-    let m  = ((unix_i / 60) % 60 + 60) % 60;
-    let h  = ((unix_i / 3600) % 24 + 24) % 24;
-    let (y, mo, day) = days_to_ymd(unix_i / 86400);
-    format!("{:04}-{:02}-{:02}  {:02}:{:02}:{:02}", y, mo, day, h, m, s)
+    let secs = ((d - 25569.0) * 86400.0).round() as i64;
+    if secs < 0 { return "Never".into(); }
+    let s   = (secs % 60) as u32;
+    let m   = ((secs / 60) % 60) as u32;
+    let h   = ((secs / 3600) % 24) as u32;
+    let (y, mo, day) = days_to_ymd(secs / 86400);
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, day, h, m, s)
 }
 
 fn days_to_ymd(days: i64) -> (i64, i64, i64) {
@@ -343,7 +344,7 @@ impl SchedulerEngine {
             settings.SetEnabled(vb(p.enabled))?;
             settings.SetHidden(vb(p.hidden))?;
             settings.SetStartWhenAvailable(VARIANT_TRUE)?;
-            settings.SetMultipleInstances(TASK_INSTANCES_STOP_EXISTING)?;
+            settings.SetMultipleInstances(TASK_INSTANCES_IGNORE_NEW)?;
             settings.SetExecutionTimeLimit(&BSTR::from("PT0S"))?;
         }
 
