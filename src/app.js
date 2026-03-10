@@ -1,5 +1,5 @@
 // ── Tauri invoke (withGlobalTauri: true) ─────────────────────────────────────
-const invoke = window.__TAURI__.core.invoke;
+const invoke = (window.__TAURI__?.core?.invoke) ?? (() => Promise.reject('Tauri IPC not available'));
 
 // ── App state ─────────────────────────────────────────────────────────────────
 let currentPage    = 'dashboard';
@@ -40,6 +40,11 @@ function openModal(title, bodyHtml, footerHtml = '') {
 
 function closeModal() {
   document.getElementById('modal-overlay').classList.remove('show');
+  // Clear form state after closing animation so re-opening shows fresh content
+  setTimeout(() => {
+    document.getElementById('modal-body').innerHTML = '';
+    document.getElementById('modal-footer').innerHTML = '';
+  }, 200);
 }
 
 // ── Page navigation ───────────────────────────────────────────────────────────
@@ -72,24 +77,24 @@ async function refreshFolders() {
 
     // "All Tasks" entry
     const allEl = document.createElement('div');
-    allEl.className   = 'folder-item' + (selectedFolder === null ? ' selected' : '');
+    allEl.className   = 'folder-item' + (selectedFolder === null ? ' active' : '');
     allEl.textContent = '📂 All Tasks';
     allEl.onclick = () => {
       selectedFolder = null;
-      document.querySelectorAll('.folder-item').forEach(f => f.classList.remove('selected'));
-      allEl.classList.add('selected');
+      document.querySelectorAll('.folder-item').forEach(f => f.classList.remove('active'));
+      allEl.classList.add('active');
       showPage('tasks');
     };
     list.appendChild(allEl);
 
     folders.forEach(folder => {
       const el        = document.createElement('div');
-      el.className    = 'folder-item' + (selectedFolder === folder ? ' selected' : '');
+      el.className    = 'folder-item' + (selectedFolder === folder ? ' active' : '');
       el.textContent  = '📁 ' + folder;
       el.onclick = () => {
         selectedFolder = folder;
-        document.querySelectorAll('.folder-item').forEach(f => f.classList.remove('selected'));
-        el.classList.add('selected');
+        document.querySelectorAll('.folder-item').forEach(f => f.classList.remove('active'));
+        el.classList.add('active');
         loadTasksForFolder(folder);
         showPage('tasks');
       };
@@ -125,7 +130,7 @@ async function loadDashboard() {
     const runningTasks = tasks.filter(t => t.status === 'Running');
 
     content.innerHTML = `
-      <div class="dash-stats-grid">
+      <div class="stat-grid">
         <div class="stat-card">
           <div class="stat-icon">📋</div>
           <div class="stat-val">${total}</div>
@@ -148,12 +153,9 @@ async function loadDashboard() {
         </div>
       </div>
 
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px">System Health — ${healthPct}% Ready</div>
       <div class="health-bar-wrap">
-        <span class="health-label">System Health</span>
-        <div class="health-bar">
-          <div class="health-fill" style="width:${healthPct}%"></div>
-        </div>
-        <span class="health-pct">${healthPct}% Ready</span>
+        <div class="health-bar" style="width:${healthPct}%"></div>
       </div>
 
       <div class="dash-cols">
@@ -162,10 +164,10 @@ async function loadDashboard() {
           ${recent.length === 0
             ? '<div class="dash-empty">No recent task runs</div>'
             : recent.map(t => `
-              <div class="dash-task-row">
+              <div class="dash-row">
                 <span class="dash-task-name">${escHtml(t.name)}</span>
                 <span class="badge badge-${badgeClass(t.status)}">${escHtml(t.status)}</span>
-                <span class="dash-task-time">${escHtml(t.last_run)}</span>
+                <span class="dash-row-right">${escHtml(t.last_run)}</span>
               </div>`).join('')}
         </div>
         <div class="dash-card">
@@ -173,9 +175,9 @@ async function loadDashboard() {
           ${runningTasks.length === 0
             ? '<div class="dash-empty">No tasks currently running</div>'
             : runningTasks.map(t => `
-              <div class="dash-task-row">
+              <div class="dash-row">
                 <span class="dash-task-name">${escHtml(t.name)}</span>
-                <span class="dash-task-time">${escHtml(t.path)}</span>
+                <span class="dash-row-right">${escHtml(t.path)}</span>
               </div>`).join('')}
         </div>
       </div>`;
@@ -191,6 +193,10 @@ async function loadDashboard() {
 // ── Task list ─────────────────────────────────────────────────────────────────
 async function loadTasksForFolder(folder) {
   setStatus('Loading tasks…');
+  // Reset pills to placeholder while loading
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  setVal('stat-total-val', '—'); setVal('stat-running-val', '—');
+  setVal('stat-ready-val', '—'); setVal('stat-disabled-val', '—');
   try {
     const tasks = folder === null
       ? await invoke('get_all_tasks')
@@ -205,7 +211,6 @@ async function loadTasksForFolder(folder) {
     const ready    = tasks.filter(t => t.status === 'Ready').length;
     const disabled = tasks.filter(t => t.status === 'Disabled').length;
 
-    const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     setVal('stat-total-val',    total);
     setVal('stat-running-val',  running);
     setVal('stat-ready-val',    ready);
@@ -220,6 +225,11 @@ async function loadTasksForFolder(folder) {
 }
 
 // ── Filter / sort ─────────────────────────────────────────────────────────────
+function dateSortVal(str) {
+  if (!str || str === 'Never' || str === 'N/A') return '';
+  return str;
+}
+
 function filterTasks() {
   const searchEl  = document.getElementById('search-input');
   const statusEl  = document.getElementById('status-filter');
@@ -237,8 +247,9 @@ function filterTasks() {
 
   // Sort
   result.sort((a, b) => {
-    let av = a[sortCol] || '';
-    let bv = b[sortCol] || '';
+    const isDateCol = sortCol === 'last_run' || sortCol === 'next_run';
+    let av = isDateCol ? dateSortVal(a[sortCol]) : (a[sortCol] || '');
+    let bv = isDateCol ? dateSortVal(b[sortCol]) : (b[sortCol] || '');
     if (typeof av === 'string') av = av.toLowerCase();
     if (typeof bv === 'string') bv = bv.toLowerCase();
     if (av < bv) return -1 * sortDir;
@@ -470,15 +481,27 @@ async function toggleTask(task) {
 }
 
 async function deleteTask(path, name) {
-  if (!confirm(`Delete task "${name}"?\nThis cannot be undone.`)) return;
-  try {
-    await invoke('delete_task', { path });
-    showToast('Task deleted', 'success');
-    closeDetail();
-    refreshAll();
-  } catch (err) {
-    showToast('Delete failed: ' + err, 'error');
-  }
+  confirmAction(`Delete task "${name}"?\nThis cannot be undone.`, async () => {
+    try {
+      await invoke('delete_task', { path });
+      showToast('Task deleted', 'success');
+      closeDetail();
+      refreshAll();
+    } catch (err) {
+      showToast('Delete failed: ' + err, 'error');
+    }
+  });
+}
+
+// ── Confirm action modal ──────────────────────────────────────────────────────
+function confirmAction(message, onConfirm) {
+  openModal('⚠ Confirm', `<p style="padding:16px;color:var(--text)">${escHtml(message)}</p>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-danger" id="confirm-ok-btn">Confirm</button>`);
+  setTimeout(() => {
+    const btn = document.getElementById('confirm-ok-btn');
+    if (btn) btn.onclick = () => { closeModal(); onConfirm(); };
+  }, 0);
 }
 
 // Module-level variable to hold the last exported XML for clipboard copy
@@ -506,8 +529,10 @@ function copyXml(text) {
 }
 
 // ── Refresh all ───────────────────────────────────────────────────────────────
-function refreshAll() {
-  loadTasksForFolder(selectedFolder);
+async function refreshAll() {
+  await refreshFolders();
+  await loadTasksForFolder(selectedFolder);
+  showToast('Refreshed', 'success');
 }
 
 // ── Create task dialog ────────────────────────────────────────────────────────
@@ -712,6 +737,13 @@ async function submitImportXml() {
   if (!name)   { showToast('Task name is required', 'error'); return; }
   if (!xml)    { showToast('XML is required', 'error'); return; }
 
+  // Validate XML client-side before sending to backend
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  if (doc.querySelector('parsererror')) {
+    showToast('Invalid XML — please check the pasted content', 'error');
+    return;
+  }
+
   try {
     await invoke('import_task_xml', { folder, name, xml });
     showToast('Task imported successfully!', 'success');
@@ -754,8 +786,19 @@ function showCtxMenu(event, task) {
   };
 
   menu.style.display = 'block';
-  menu.style.left    = event.pageX + 'px';
-  menu.style.top     = event.pageY + 'px';
+  // Clamp to viewport so menu doesn't overflow edges
+  let x = event.pageX;
+  let y = event.pageY;
+  requestAnimationFrame(() => {
+    const mw = menu.offsetWidth;
+    const mh = menu.offsetHeight;
+    if (x + mw > window.innerWidth)  x = window.innerWidth  - mw - 4;
+    if (y + mh > window.innerHeight) y = window.innerHeight - mh - 4;
+    menu.style.left = Math.max(0, x) + 'px';
+    menu.style.top  = Math.max(0, y) + 'px';
+  });
+  menu.style.left = x + 'px';
+  menu.style.top  = y + 'px';
 }
 
 function hideCtxMenu() {
@@ -924,7 +967,7 @@ function renderSettings() {
           </div>
           <label class="toggle">
             <input type="checkbox" id="s-show-system" ${settings.showSystemTasks ? 'checked' : ''}
-                   onchange="settings.showSystemTasks = this.checked; refreshAll()" />
+                   onchange="settings.showSystemTasks = this.checked; localStorage.setItem('showSystemTasks', this.checked); refreshAll()" />
             <span class="toggle-slider"></span>
           </label>
         </div>
@@ -950,6 +993,7 @@ function renderSettings() {
 
 function onAutoRefreshChange() {
   settings.autoRefresh = document.getElementById('s-auto-refresh').checked;
+  localStorage.setItem('autoRefresh', settings.autoRefresh);
   const row = document.getElementById('s-interval-row');
   if (row) row.style.display = settings.autoRefresh ? '' : 'none';
 
@@ -961,6 +1005,7 @@ function onAutoRefreshChange() {
 
 function onRefreshIntervalChange() {
   settings.refreshInterval = parseInt(document.getElementById('s-refresh-interval').value, 10) || 30;
+  localStorage.setItem('refreshInterval', settings.refreshInterval);
   if (settings.autoRefresh) {
     if (autoRefreshTimer) clearInterval(autoRefreshTimer);
     autoRefreshTimer = setInterval(refreshAll, settings.refreshInterval * 1000);
@@ -969,6 +1014,16 @@ function onRefreshIntervalChange() {
 
 // ── App initialisation ────────────────────────────────────────────────────────
 async function init() {
+  // Apply stored settings before first render
+  if (localStorage.getItem('autoRefresh') === 'true') {
+    settings.autoRefresh = true;
+    settings.refreshInterval = parseInt(localStorage.getItem('refreshInterval') || '30', 10) || 30;
+    autoRefreshTimer = setInterval(refreshAll, settings.refreshInterval * 1000);
+  }
+  if (localStorage.getItem('showSystemTasks') === 'false') {
+    settings.showSystemTasks = false;
+  }
+
   // Check admin status
   try {
     const isAdmin = await invoke('is_admin');
@@ -993,6 +1048,14 @@ async function init() {
   // Close modal on overlay click
   document.getElementById('modal-overlay').addEventListener('click', e => {
     if (e.target === document.getElementById('modal-overlay')) closeModal();
+  });
+
+  // Escape key: close modal and context menu
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      closeModal();
+      hideCtxMenu();
+    }
   });
 
   await refreshFolders();
