@@ -84,7 +84,7 @@ body.has-banner #root-wrap { padding-top: 34px; }
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-#app-logo  { font-size: 22px; }
+#app-logo  { width: 28px; height: 28px; object-fit: contain; flex-shrink: 0; }
 #app-title { font-size: 15px; font-weight: 700; color: var(--accent); }
 
 #nav-items { padding: 8px 0; flex-shrink: 0; }
