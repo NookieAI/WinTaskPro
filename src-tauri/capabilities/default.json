@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for WinTaskPro",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:webview:allow-internal-toggle-devtools"
+  ]
+}
