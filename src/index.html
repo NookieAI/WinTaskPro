@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WinTaskPro</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="favicon.ico" />
+</head>
+<body>
+
+  <!-- Admin banner -->
+  <div id="admin-banner">
+    ⚠ Not running as Administrator — some tasks may be inaccessible.
+    Right-click the .exe and choose <strong>Run as administrator</strong>.
+  </div>
+
+  <div id="root-wrap">
+    <div id="layout">
+
+      <!-- Sidebar -->
+      <div id="sidebar">
+        <div id="app-brand">
+          <span id="app-logo">⚡</span>
+          <span id="app-title">WinTaskPro</span>
+        </div>
+
+        <nav id="nav-items">
+          <div class="nav-item active" data-page="dashboard">
+            <span class="nav-icon">🏠</span><span>Dashboard</span>
+          </div>
+          <div class="nav-item" data-page="tasks">
+            <span class="nav-icon">📋</span><span>Task Manager</span>
+          </div>
+          <div class="nav-item" data-page="templates">
+            <span class="nav-icon">📚</span><span>Script Library</span>
+          </div>
+          <div class="nav-item" data-page="settings">
+            <span class="nav-icon">⚙</span><span>Settings</span>
+          </div>
+        </nav>
+
+        <div id="folder-section">
+          <div id="sidebar-header">
+            <span>📁 FOLDERS</span>
+            <button class="icon-btn" onclick="refreshFolders()" title="Refresh">⟳</button>
+          </div>
+          <div id="folder-list"></div>
+        </div>
+      </div>
+
+      <!-- Main -->
+      <div id="main">
+
+        <!-- Topbar — only shown on tasks page -->
+        <div id="topbar">
+          <div id="topbar-left">
+            <button class="btn btn-primary" onclick="openCreateDialog()">➕ New Task</button>
+            <button class="btn" onclick="importXml()">📥 Import XML</button>
+            <button class="btn" onclick="refreshAll()">🔄 Refresh</button>
+          </div>
+          <div id="topbar-right">
+            <input type="text" id="search-input" placeholder="🔍  Search tasks…" oninput="onSearchInput()" />
+            <select id="status-filter" onchange="filterTasks()">
+              <option value="">All Statuses</option>
+              <option value="Ready">Ready</option>
+              <option value="Running">Running</option>
+              <option value="Disabled">Disabled</option>
+              <option value="Queued">Queued</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="pages">
+
+          <!-- Dashboard -->
+          <div id="page-dashboard" class="page active">
+            <div id="dash-content">
+              <div class="loading-msg"><span class="spinner"></span> Loading…</div>
+            </div>
+          </div>
+
+          <!-- Tasks -->
+          <div id="page-tasks" class="page">
+            <div id="stats-bar">
+              <div class="stat-pill">Total <strong id="stat-total-val">—</strong></div>
+              <div class="stat-pill running">Running <strong id="stat-running-val">—</strong></div>
+              <div class="stat-pill ready">Ready <strong id="stat-ready-val">—</strong></div>
+              <div class="stat-pill disabled">Disabled <strong id="stat-disabled-val">—</strong></div>
+            </div>
+            <div id="table-wrap">
+              <table id="task-table">
+                <colgroup>
+                  <col /><col /><col /><col /><col /><col /><col /><col />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th onclick="sortBy('name')">Task Name <span class="sort-icon">⇅</span></th>
+                    <th onclick="sortBy('status')">Status <span class="sort-icon">⇅</span></th>
+                    <th>Triggers</th>
+                    <th>Action</th>
+                    <th onclick="sortBy('last_run')">Last Run <span class="sort-icon">⇅</span></th>
+                    <th onclick="sortBy('next_run')">Next Run <span class="sort-icon">⇅</span></th>
+                    <th>Last Result</th>
+                    <th>Controls</th>
+                  </tr>
+                </thead>
+                <tbody id="task-tbody"></tbody>
+              </table>
+              <div id="empty-state">
+                <div class="empty-icon">📋</div>
+                <div class="empty-title">No tasks found</div>
+                <div class="empty-sub">Select a folder or adjust your search</div>
+              </div>
+            </div>
+
+            <!-- Detail panel lives inside tasks page -->
+            <div id="detail-panel" class="panel-hidden">
+              <div id="detail-header">
+                <span id="detail-name">—</span>
+                <button class="icon-btn" onclick="closeDetail()">✕</button>
+              </div>
+              <div id="detail-actions">
+                <button class="btn btn-success" id="d-run-btn">▶ Run</button>
+                <button class="btn btn-danger"  id="d-stop-btn">⏹ Stop</button>
+                <button class="btn btn-warning" id="d-toggle-btn">⏸ Disable</button>
+                <button class="btn"             id="d-xml-btn">＜/＞ XML</button>
+                <button class="btn btn-danger"  id="d-delete-btn">🗑 Delete</button>
+              </div>
+              <div id="detail-body"></div>
+            </div>
+          </div>
+
+          <!-- Templates -->
+          <div id="page-templates" class="page">
+            <div id="templates-content" style="padding:16px"></div>
+          </div>
+
+          <!-- Settings -->
+          <div id="page-settings" class="page">
+            <div id="settings-content"></div>
+          </div>
+
+        </div><!-- /pages -->
+      </div><!-- /main -->
+    </div><!-- /layout -->
+
+    <!-- Status bar -->
+    <div id="statusbar">
+      <span id="status-text">Ready</span>
+    </div>
+  </div><!-- /root-wrap -->
+
+  <!-- Modal -->
+  <div id="modal-overlay">
+    <div id="modal-box">
+      <div id="modal-header">
+        <span id="modal-title"></span>
+        <button class="icon-btn" onclick="closeModal()">✕</button>
+      </div>
+      <div id="modal-body"></div>
+      <div id="modal-footer"></div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast"></div>
+
+  <!-- Context menu -->
+  <div id="ctx-menu" style="display:none"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
