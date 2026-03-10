@@ -153,7 +153,7 @@ body.has-banner #root-wrap { padding-top: 34px; }
   height: var(--topbar-h);
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
-  display: flex;
+  display: none; /* JS sets display:flex when on tasks page */
   align-items: center;
   justify-content: space-between;
   padding: 0 14px;
@@ -208,8 +208,11 @@ body.has-banner #root-wrap { padding-top: 34px; }
 .stat-card .stat-val  { font-size: 32px; font-weight: 700; color: var(--text); line-height: 1; }
 .stat-card .stat-lbl  { font-size: 11px; color: var(--text3); margin-top: 4px; }
 .stat-card .stat-sub  { font-size: 11px; color: var(--text3); margin-top: 8px; }
-.health-bar-wrap { background: var(--bg3); border-radius: 4px; height: 5px; margin-top: 10px; overflow: hidden; }
-.health-bar      { height: 5px; border-radius: 4px; transition: width .6s; }
+.stat-card.running .stat-val { color: var(--green); }
+.stat-card.ready   .stat-val { color: var(--accent); }
+.stat-card.disabled .stat-val { color: var(--text3); }
+.health-bar-wrap { background: var(--bg3); border-radius: 4px; height: 5px; overflow: hidden; }
+.health-bar      { height: 5px; border-radius: 4px; background: var(--green); transition: width .6s; }
 
 .dash-cols {
   display: grid;
