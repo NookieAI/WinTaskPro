@@ -256,6 +256,22 @@ html, body {
 .dash-empty     { color: var(--text3); font-size: 12px; text-align: center; padding: 30px 0; }
 .loading-msg    { color: var(--text3); text-align: center; padding: 60px; font-size: 14px; display: flex; align-items: center; justify-content: center; gap: 10px; }
 
+/* ── Tasks page layout ───────────────────────────────────────────────────────────────── */
+#page-tasks {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* The area below stats-bar: table + detail panel side by side */
+#task-content-row {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
 /* ── Stats bar (tasks page) ��──────────────────────────────────────────────── */
 #stats-bar {
   display: flex;
@@ -311,7 +327,7 @@ html, body {
   white-space: nowrap;
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 2;
 }
 #task-table thead th:hover { color: var(--text); }
 .sort-icon { opacity: .4; font-size: 10px; margin-left: 2px; }
@@ -734,10 +750,11 @@ select.form-control   { cursor: pointer; }
 .xml-comment  { color: #4ade80; font-style: italic; }
 
 /* ── Scrollbar ────────────────────────────────────────────────────────────── */
-::-webkit-scrollbar       { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar        { width: 7px; height: 7px; }
+::-webkit-scrollbar-track  { background: var(--bg2); }
+::-webkit-scrollbar-thumb  { background: var(--border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text3); }
+::-webkit-scrollbar-corner { background: var(--bg2); }
 
 /* ── Health dots ──────────────────────────────────────────────────────────── */
 .health-dot {
@@ -951,3 +968,25 @@ select.form-control   { cursor: pointer; }
 
 /* ── Script editor tab-key support hint ───────────────────────────────────── */
 #script-editor-content:focus { outline: none; }
+
+/* ── Update banner ────────────────────────────────────────────────────────────────────────────── */
+#update-banner {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  background: var(--bg2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 9000;
+  font-size: 13px;
+  box-shadow: 0 4px 24px rgba(0,0,0,.5);
+  animation: slideInRight .3s ease;
+}
+@keyframes slideInRight {
+  from { transform: translateX(120%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
