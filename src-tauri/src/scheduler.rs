@@ -654,7 +654,7 @@ impl SchedulerEngine {
         {
             return Err(windows::core::Error::new(
                 windows::core::HRESULT(0x80070057u32 as i32),
-                "Task name contains invalid characters (cannot use \\ / : * ? \" < > |)",
+                windows::core::HSTRING::from("Task name contains invalid characters (cannot use \\ / : * ? \" < > |)"),
             ));
         }
 
@@ -691,20 +691,19 @@ impl SchedulerEngine {
         // share the same values and SetLogonType is called consistently.
         let run_as = p.run_as_user.trim();
         let u_upper = run_as.to_ascii_uppercase();
-        let is_system_account = u_upper == "SYSTEM"
-            || u_upper.starts_with("NT AUTHORITY\\")
-            || u_upper.starts_with("NT SERVICE\\");
+        let is_service_account = !run_as.is_empty()
+            && (u_upper == "SYSTEM"
+                || u_upper.starts_with("NT AUTHORITY\\")
+                || u_upper.starts_with("NT SERVICE\\"));
 
-        let logon = if is_system_account {
+        let logon = if is_service_account {
             // Well-known service accounts (SYSTEM, NT AUTHORITY\*, NT SERVICE\*)
             TASK_LOGON_SERVICE_ACCOUNT
-        } else if run_as.is_empty() {
-            // No user specified → run as the current interactive user
-            TASK_LOGON_INTERACTIVE_TOKEN
         } else {
-            // A specific named user was provided → use S4U
-            // (does NOT require SeTcbPrivilege unlike INTERACTIVE_TOKEN with a UserId)
-            TASK_LOGON_S4U
+            // INTERACTIVE_TOKEN works for both "no user specified" and "named regular user"
+            // without requiring SeTcbPrivilege. Windows runs the task as the current
+            // interactive session user.
+            TASK_LOGON_INTERACTIVE_TOKEN
         };
 
         let principal = unsafe { defn.Principal()? };
@@ -712,7 +711,8 @@ impl SchedulerEngine {
         unsafe {
             principal.SetRunLevel(run_level)?;
             principal.SetLogonType(logon)?;
-            if !run_as.is_empty() {
+            // Only set UserId for service accounts; INTERACTIVE_TOKEN must NOT have UserId set.
+            if is_service_account {
                 principal.SetUserId(&BSTR::from(run_as))?;
             }
         }
@@ -892,8 +892,8 @@ impl SchedulerEngine {
 
         // For service accounts, pass the account name in the userId VARIANT so
         // Windows Task Scheduler knows which service account to use.
-        // Note: is_system_account is only true when run_as is non-empty (SYSTEM/NT AUTHORITY/NT SERVICE).
-        let user_v = if is_system_account {
+        // Note: is_service_account is only true when run_as is non-empty (SYSTEM/NT AUTHORITY/NT SERVICE).
+        let user_v = if is_service_account {
             windows::core::VARIANT::from(BSTR::from(run_as))
         } else {
             VARIANT::default()
