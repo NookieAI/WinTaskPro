@@ -2194,7 +2194,6 @@ function renderSettings() {
   const accentColors = ['#3b82f6','#6366f1','#10b981','#f59e0b','#ef4444','#ec4899','#8b5cf6','#06b6d4'];
   const curAccent = localStorage.getItem('wtp_accent') || '#3b82f6';
   const notifyEnabled = localStorage.getItem('wtp_notifyOnFailure') === 'true';
-  const minimizeToTray = localStorage.getItem('wtp_minimizeToTray') !== 'false';
 
   content.innerHTML = `
     <div class="settings-page">
@@ -2222,17 +2221,7 @@ function renderSettings() {
                  min="5" max="300" style="width:80px"
                  onchange="onRefreshIntervalChange()" />
         </div>
-        <div class="settings-row">
-          <div>
-            <div class="settings-label">Minimize to Tray</div>
-            <div class="settings-sub">Hide to system tray when closing the window</div>
-          </div>
-          <label class="toggle">
-            <input type="checkbox" id="s-minimize-tray" ${minimizeToTray ? 'checked' : ''}
-                   onchange="localStorage.setItem('wtp_minimizeToTray', this.checked)" />
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
+
       </div>
 
       <div class="settings-section">
