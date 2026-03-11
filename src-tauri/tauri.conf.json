@@ -1,1 +1,51 @@
-{"$schema":"https://schema.tauri.app/config/2","productName":"WinTaskPro","version":"1.0.0","identifier":"com.wintaskpro.dev","build":{"frontendDist":"../src","devUrl":"http://localhost:1420","beforeDevCommand":"py -m http.server 1420 --directory src","beforeBuildCommand":""},"app":{"withGlobalTauri":true,"windows":[{"title":"WinTaskPro — Task Scheduler","width":1280,"height":800,"minWidth":900,"minHeight":600,"resizable":true,"center":true,"maximized":true}],"security":{"csp":null}},"bundle":{"active":true,"targets":"all","icon":["icons/icon.ico","icons/icon.png"]}}
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "WinTaskPro",
+  "version": "1.0.0",
+  "identifier": "com.wintaskpro.dev",
+  "build": {
+    "frontendDist": "../src",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "py -m http.server 1420 --directory src",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "WinTaskPro \u2014 Task Scheduler",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true,
+        "maximized": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/NookieAI/WinTaskPro/releases/latest/download/latest.json"
+      ],
+      "dialog": false,
+      "windows": {
+        "installerArgs": [],
+        "installMode": "passive"
+      }
+    }
+  }
+}
