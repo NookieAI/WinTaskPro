@@ -660,12 +660,33 @@ impl SchedulerEngine {
             }
         }
 
+        // Compute run_as and logon type BEFORE configuring the principal so both
+        // share the same values and SetLogonType is called consistently.
+        let run_as = p.run_as_user.trim();
+        let u_upper = run_as.to_ascii_uppercase();
+        let is_system_account = u_upper == "SYSTEM"
+            || u_upper.starts_with("NT AUTHORITY\\")
+            || u_upper.starts_with("NT SERVICE\\");
+
+        let logon = if is_system_account {
+            // Well-known service accounts (SYSTEM, NT AUTHORITY\*, NT SERVICE\*)
+            TASK_LOGON_SERVICE_ACCOUNT
+        } else if run_as.is_empty() {
+            // No user specified → run as the current interactive user
+            TASK_LOGON_INTERACTIVE_TOKEN
+        } else {
+            // A specific named user was provided → use S4U
+            // (does NOT require SeTcbPrivilege unlike INTERACTIVE_TOKEN with a UserId)
+            TASK_LOGON_S4U
+        };
+
         let principal = unsafe { defn.Principal()? };
         let run_level = if p.run_level == 1 { TASK_RUNLEVEL_HIGHEST } else { TASK_RUNLEVEL_LUA };
         unsafe {
             principal.SetRunLevel(run_level)?;
-            if !p.run_as_user.is_empty() {
-                principal.SetUserId(&BSTR::from(p.run_as_user.as_str()))?;
+            principal.SetLogonType(logon)?;
+            if !run_as.is_empty() {
+                principal.SetUserId(&BSTR::from(run_as))?;
             }
         }
 
@@ -834,39 +855,32 @@ impl SchedulerEngine {
             }
         }
 
-        // Choose logon type based on run_as_user:
-        // - Empty, SYSTEM, or NT AUTHORITY/SERVICE accounts → SERVICE_ACCOUNT
-        // - Any other named user (including the current interactive user) → INTERACTIVE_TOKEN
-        //   Using TASK_LOGON_S4U for regular user accounts requires special privileges and
-        //   causes 0x80070005 (Access Denied) when the user is not a group-managed service account.
-        let run_as = p.run_as_user.trim();
-        let u_upper = run_as.to_ascii_uppercase();
-        let is_service = run_as.is_empty()
-            || u_upper == "SYSTEM"
-            || u_upper.starts_with("NT AUTHORITY\\")
-            || u_upper.starts_with("NT SERVICE\\");
-
-        let logon = if is_service {
-            TASK_LOGON_SERVICE_ACCOUNT
-        } else {
-            TASK_LOGON_INTERACTIVE_TOKEN
-        };
-
         // Normalise folder_path: treat empty or root as "\\"
         let folder_path = {
             let fp = p.folder_path.trim();
             if fp.is_empty() { "\\".to_string() } else { fp.to_string() }
         };
         let folder = unsafe { self.service.GetFolder(&BSTR::from(folder_path.as_str()))? };
-        let v = VARIANT::default();
+        let empty_v = VARIANT::default();
+
+        // For service accounts, pass the account name in the userId VARIANT so
+        // Windows Task Scheduler knows which service account to use.
+        // Note: is_system_account is only true when run_as is non-empty (SYSTEM/NT AUTHORITY/NT SERVICE).
+        let user_v = if is_system_account {
+            windows::core::VARIANT::from(BSTR::from(run_as))
+        } else {
+            VARIANT::default()
+        };
+
         unsafe {
             folder.RegisterTaskDefinition(
                 &BSTR::from(p.name.as_str()),
                 &defn,
                 TASK_CREATE_OR_UPDATE.0,
-                &v, &v,
+                &user_v,   // userId: service account name or empty for interactive
+                &empty_v,  // password: empty
                 logon,
-                &v,
+                &empty_v,  // sddl: empty
             )?;
         }
         Ok(())
@@ -874,7 +888,10 @@ impl SchedulerEngine {
 
     // ── Update (delete + recreate) ────────────────────────────────────────────
     pub fn update_task(&self, task_path: &str, p: &CreateTaskParams) -> Result<()> {
-        self.delete_task(task_path)?;
+        // Best-effort delete of the old task. Ignore errors (task may have been renamed
+        // or already removed). create_task uses TASK_CREATE_OR_UPDATE so it will overwrite
+        // any existing task with the same name.
+        let _ = self.delete_task(task_path);
         self.create_task(p)
     }
 
