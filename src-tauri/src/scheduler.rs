@@ -891,8 +891,7 @@ impl SchedulerEngine {
 
         // Build a 90-day window: start = 90 days ago (simplified via month math),
         // end = very far future so we capture all recent scheduled runs.
-        let mut end_st = SYSTEMTIME::default();
-        unsafe { GetSystemTime(&mut end_st); }
+        let end_st = unsafe { GetSystemTime() };
 
         let mut start_st = end_st;
         // Subtract ~3 months (approximation of 90 days)
