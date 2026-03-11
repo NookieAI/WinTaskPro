@@ -209,6 +209,12 @@ html, body {
 .stat-card.running .stat-val { color: var(--green); }
 .stat-card.ready   .stat-val { color: var(--accent); }
 .stat-card.disabled .stat-val { color: var(--text3); }
+.stat-card.failed-card {
+  border-color: var(--red);
+}
+.stat-card.failed-card .stat-val {
+  color: var(--red);
+}
 .health-bar-wrap { background: var(--bg3); border-radius: 4px; height: 5px; overflow: hidden; }
 .health-bar      { height: 5px; border-radius: 4px; background: var(--green); transition: width .6s; }
 
