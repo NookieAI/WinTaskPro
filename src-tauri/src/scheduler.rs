@@ -662,10 +662,33 @@ impl SchedulerEngine {
 
         let principal = unsafe { defn.Principal()? };
         let run_level = if p.run_level == 1 { TASK_RUNLEVEL_HIGHEST } else { TASK_RUNLEVEL_LUA };
+
+        // Determine logon type early so it can be set on both the principal and
+        // RegisterTaskDefinition.  Rules:
+        //   - SYSTEM / NT AUTHORITY\* / NT SERVICE\* → SERVICE_ACCOUNT
+        //   - empty run_as_user (current interactive user) → INTERACTIVE_TOKEN; no SetUserId
+        //   - any other named user → S4U (avoids 0x80070005 from INTERACTIVE_TOKEN + explicit UserId)
+        let run_as = p.run_as_user.trim();
+        let u_upper = run_as.to_ascii_uppercase();
+        let is_system = u_upper == "SYSTEM"
+            || u_upper.starts_with("NT AUTHORITY\\")
+            || u_upper.starts_with("NT SERVICE\\");
+
+        let logon = if is_system {
+            TASK_LOGON_SERVICE_ACCOUNT
+        } else if run_as.is_empty() {
+            TASK_LOGON_INTERACTIVE_TOKEN
+        } else {
+            TASK_LOGON_S4U
+        };
+
         unsafe {
             principal.SetRunLevel(run_level)?;
-            if !p.run_as_user.is_empty() {
-                principal.SetUserId(&BSTR::from(p.run_as_user.as_str()))?;
+            if !run_as.is_empty() {
+                principal.SetUserId(&BSTR::from(run_as))?;
+            }
+            if is_system {
+                let _ = principal.SetLogonType(TASK_LOGON_SERVICE_ACCOUNT);
             }
         }
 
@@ -834,24 +857,6 @@ impl SchedulerEngine {
             }
         }
 
-        // Choose logon type based on run_as_user:
-        // - Empty, SYSTEM, or NT AUTHORITY/SERVICE accounts → SERVICE_ACCOUNT
-        // - Any other named user (including the current interactive user) → INTERACTIVE_TOKEN
-        //   Using TASK_LOGON_S4U for regular user accounts requires special privileges and
-        //   causes 0x80070005 (Access Denied) when the user is not a group-managed service account.
-        let run_as = p.run_as_user.trim();
-        let u_upper = run_as.to_ascii_uppercase();
-        let is_service = run_as.is_empty()
-            || u_upper == "SYSTEM"
-            || u_upper.starts_with("NT AUTHORITY\\")
-            || u_upper.starts_with("NT SERVICE\\");
-
-        let logon = if is_service {
-            TASK_LOGON_SERVICE_ACCOUNT
-        } else {
-            TASK_LOGON_INTERACTIVE_TOKEN
-        };
-
         // Normalise folder_path: treat empty or root as "\\"
         let folder_path = {
             let fp = p.folder_path.trim();
@@ -874,7 +879,9 @@ impl SchedulerEngine {
 
     // ── Update (delete + recreate) ────────────────────────────────────────────
     pub fn update_task(&self, task_path: &str, p: &CreateTaskParams) -> Result<()> {
-        self.delete_task(task_path)?;
+        // Ignore delete errors: the old task may not exist (e.g. renamed/moved task or
+        // path mismatch). We still want to (re)create it with the new parameters.
+        let _ = self.delete_task(task_path);
         self.create_task(p)
     }
 
