@@ -626,7 +626,7 @@ impl SchedulerEngine {
     // ── Running tasks ─────────────────────────────────────────────────────────
     pub fn get_running_tasks(&self) -> Result<Vec<RunningTaskInfo>> {
         let col = unsafe { self.service.GetRunningTasks(0)? };
-        let count = unsafe { read_i32(|p| col.Count(p)) };
+        let count = unsafe { col.Count().unwrap_or(0) };
         let mut out = Vec::new();
         for i in 1..=count {
             let v = vi(i);
@@ -634,11 +634,10 @@ impl SchedulerEngine {
                 Ok(t)  => t,
                 Err(_) => continue,
             };
-            let name           = unsafe { read_bstr(|b| rt.Name(b)) };
-            let path           = unsafe { read_bstr(|b| rt.Path(b)) };
-            let current_action = unsafe { read_bstr(|b| rt.CurrentAction(b)) };
-            let mut state_val  = TASK_STATE::default();
-            unsafe { let _ = rt.State(&mut state_val); }
+            let name           = unsafe { rt.Name().map(|b| b.to_string()).unwrap_or_default() };
+            let path           = unsafe { rt.Path().map(|b| b.to_string()).unwrap_or_default() };
+            let current_action = unsafe { rt.CurrentAction().map(|b| b.to_string()).unwrap_or_default() };
+            let state_val      = unsafe { rt.State().unwrap_or(TASK_STATE_UNKNOWN) };
             let (state, _) = task_state_str(state_val);
             out.push(RunningTaskInfo { name, path, current_action, state });
         }
@@ -659,8 +658,7 @@ impl SchedulerEngine {
 
         // Build a 90-day window: start = 90 days ago (simplified via month math),
         // end = very far future so we capture all recent scheduled runs.
-        let mut end_st = SYSTEMTIME::default();
-        unsafe { GetSystemTime(&mut end_st); }
+        let end_st = unsafe { GetSystemTime() };
 
         let mut start_st = end_st;
         // Subtract ~3 months (approximation of 90 days)
