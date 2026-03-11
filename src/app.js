@@ -2981,14 +2981,15 @@ loadDashboard = async function() {
       .filter(t => t.last_result_code !== 0 && t.last_result_code !== TASK_RESULT_NOT_RUN && t.last_result_code !== TASK_RESULT_RUNNING)
       .sort((a, b) => b.last_run.localeCompare(a.last_run)).slice(0, 5);
     const healthPct = total > 0 ? Math.round((ready / total) * 100) : 0;
+    const fmtDate = s => (s && s !== 'Never' && s !== 'N/A') ? s.replace(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}):\d{2}.*/, '$1') : (s || '');
 
     content.innerHTML = `
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-icon">All</div><div class="stat-val">${total}</div><div class="stat-lbl">Total Tasks</div></div>
-        <div class="stat-card running"><div class="stat-icon">Running</div><div class="stat-val">${running}</div><div class="stat-lbl">Running</div></div>
-        <div class="stat-card ready"><div class="stat-icon">Ready</div><div class="stat-val">${ready}</div><div class="stat-lbl">Ready</div></div>
-        <div class="stat-card disabled"><div class="stat-icon">Off</div><div class="stat-val">${disabled}</div><div class="stat-lbl">Disabled</div></div>
-        <div class="stat-card"><div class="stat-icon">Err</div><div class="stat-val" style="color:var(--red)">${failed}</div><div class="stat-lbl">Failed</div></div>
+        <div class="stat-card"><div class="stat-icon">📋</div><div class="stat-val">${total}</div><div class="stat-lbl">Total</div></div>
+        <div class="stat-card running"><div class="stat-icon">▶</div><div class="stat-val">${running}</div><div class="stat-lbl">Running</div></div>
+        <div class="stat-card ready"><div class="stat-icon">✅</div><div class="stat-val">${ready}</div><div class="stat-lbl">Ready</div></div>
+        <div class="stat-card disabled"><div class="stat-icon">⏸</div><div class="stat-val">${disabled}</div><div class="stat-lbl">Disabled</div></div>
+        <div class="stat-card"><div class="stat-icon">⚠</div><div class="stat-val" style="color:var(--red)">${failed}</div><div class="stat-lbl">Failed</div></div>
       </div>
       <div style="margin:10px 0 4px;font-size:11px;color:var(--text3)">System Health: ${healthPct}% Ready</div>
       <div class="health-bar-wrap"><div class="health-bar" style="width:${healthPct}%"></div></div>
@@ -3002,27 +3003,29 @@ loadDashboard = async function() {
           <div class="dash-card-title">Upcoming Tasks (Next 10)</div>
           ${upcoming.length === 0
             ? '<div style="padding:20px;text-align:center;color:var(--text2)">No upcoming scheduled tasks</div>'
-            : `<table class="detail-table" style="width:100%">
-                <thead><tr><th>Name</th><th>Next Run</th><th>Trigger</th></tr></thead>
-                <tbody>${upcoming.map(t => `
-                  <tr style="cursor:pointer" onclick="showPage('tasks')">
-                    <td>${escHtml(t.name)}</td>
-                    <td>${escHtml(t.next_run)}</td>
-                    <td>${escHtml((t.triggers||['-'])[0])}</td>
-                  </tr>`).join('')}
+            : `<table class="dash-table">
+                <thead><tr><th style="width:45%">Name</th><th style="width:30%">Next Run</th><th style="width:25%">Trigger</th></tr></thead>
+                <tbody>${upcoming.map(t => {
+                  const trig = escHtml((t.triggers||['-'])[0]);
+                  return `<tr style="cursor:pointer" onclick="showPage('tasks')">
+                    <td title="${escHtml(t.name)}">${escHtml(t.name)}</td>
+                    <td title="${escHtml(t.next_run)}">${escHtml(fmtDate(t.next_run))}</td>
+                    <td title="${trig}">${trig}</td>
+                  </tr>`;
+                }).join('')}
                 </tbody></table>`}
         </div>
         <div class="dash-card">
           <div class="dash-card-title">Recently Failed</div>
           ${recentlyFailed.length === 0
-            ? '<div style="padding:20px;text-align:center;color:var(--text2)">No failed tasks - all good!</div>'
-            : `<table class="detail-table" style="width:100%">
-                <thead><tr><th>Name</th><th>Last Run</th><th>Error</th></tr></thead>
+            ? '<div style="padding:20px;text-align:center;color:var(--text2)">No failed tasks — all good!</div>'
+            : `<table class="dash-table">
+                <thead><tr><th style="width:40%">Name</th><th style="width:28%">Last Run</th><th style="width:32%">Error</th></tr></thead>
                 <tbody>${recentlyFailed.map(t => `
                   <tr>
-                    <td>${escHtml(t.name)}</td>
-                    <td>${escHtml(t.last_run)}</td>
-                    <td class="result-error">${escHtml(t.last_result)}</td>
+                    <td title="${escHtml(t.name)}">${escHtml(t.name)}</td>
+                    <td title="${escHtml(t.last_run)}">${escHtml(fmtDate(t.last_run))}</td>
+                    <td class="result-error" title="${escHtml(t.last_result)}">${escHtml(t.last_result)}</td>
                   </tr>`).join('')}
                 </tbody></table>
               <button class="btn" style="margin-top:8px" onclick="showPage('tasks')">View All</button>`}
