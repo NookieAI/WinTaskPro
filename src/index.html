@@ -32,8 +32,14 @@
           <div class="nav-item" data-page="tasks">
             <span class="nav-icon">📋</span><span>Task Manager</span>
           </div>
+          <div class="nav-item" data-page="live">
+            <span class="nav-icon">🔴</span><span>Live Monitor</span>
+          </div>
           <div class="nav-item" data-page="templates">
             <span class="nav-icon">📚</span><span>Script Library</span>
+          </div>
+          <div class="nav-item" data-page="auditlog">
+            <span class="nav-icon">📝</span><span>Audit Log</span>
           </div>
           <div class="nav-item" data-page="settings">
             <span class="nav-icon">⚙</span><span>Settings</span>
@@ -43,7 +49,10 @@
         <div id="folder-section">
           <div id="sidebar-header">
             <span>📁 FOLDERS</span>
-            <button class="icon-btn" onclick="refreshFolders()" title="Refresh">⟳</button>
+            <div style="display:flex;gap:4px">
+              <button class="icon-btn" onclick="openCreateFolderDialog('\\')" title="New Folder">＋</button>
+              <button class="icon-btn" onclick="refreshFolders()" title="Refresh">⟳</button>
+            </div>
           </div>
           <div id="folder-list"></div>
         </div>
@@ -60,6 +69,7 @@
             <button class="btn" onclick="refreshAll()">🔄 Refresh</button>
           </div>
           <div id="topbar-right">
+            <span id="live-refresh-indicator" style="display:none" title="Auto-refresh active">🔄 Live</span>
             <input type="text" id="search-input" placeholder="🔍  Search tasks…" oninput="onSearchInput()" />
             <select id="status-filter" onchange="filterTasks()">
               <option value="">All Statuses</option>
@@ -68,6 +78,8 @@
               <option value="Disabled">Disabled</option>
               <option value="Queued">Queued</option>
             </select>
+            <button class="btn" id="col-picker-btn" onclick="toggleColPicker()" title="Column visibility">⚙ Columns</button>
+            <div id="col-picker" style="display:none"></div>
           </div>
         </div>
 
@@ -89,20 +101,32 @@
               <div class="stat-pill disabled">Disabled <strong id="stat-disabled-val">—</strong></div>
             </div>
             <div id="table-wrap">
+              <!-- Bulk action toolbar (shown when tasks are selected) -->
+              <div id="bulk-toolbar" style="display:none">
+                <span id="bulk-count-label">0 selected</span>
+                <button class="btn btn-success" onclick="bulkRun()">▶ Run All</button>
+                <button class="btn" onclick="bulkEnable()">▶ Enable All</button>
+                <button class="btn btn-warning" onclick="bulkDisable()">⏸ Disable All</button>
+                <button class="btn" onclick="bulkExportXml()">📤 Export All</button>
+                <button class="btn btn-danger" onclick="bulkDelete()">🗑 Delete All</button>
+                <button class="btn" onclick="clearBulkSelection()">✕ Clear</button>
+              </div>
               <table id="task-table">
                 <colgroup>
-                  <col /><col /><col /><col /><col /><col /><col /><col />
+                  <col style="width:32px"/><col /><col style="width:28px"/><col /><col /><col /><col /><col /><col /><col />
                 </colgroup>
                 <thead>
                   <tr>
-                    <th onclick="sortBy('name')">Task Name <span class="sort-icon">⇅</span></th>
-                    <th onclick="sortBy('status')">Status <span class="sort-icon">⇅</span></th>
-                    <th>Triggers</th>
-                    <th>Action</th>
-                    <th onclick="sortBy('last_run')">Last Run <span class="sort-icon">⇅</span></th>
-                    <th onclick="sortBy('next_run')">Next Run <span class="sort-icon">⇅</span></th>
-                    <th>Last Result</th>
-                    <th>Controls</th>
+                    <th data-col="cb"><input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this.checked)" /></th>
+                    <th data-col="name" onclick="sortBy('name')">Task Name <span class="sort-icon">⇅</span></th>
+                    <th data-col="health" title="Health">❤</th>
+                    <th data-col="status" onclick="sortBy('status')">Status <span class="sort-icon">⇅</span></th>
+                    <th data-col="triggers">Triggers</th>
+                    <th data-col="action">Action</th>
+                    <th data-col="last_run" onclick="sortBy('last_run')">Last Run <span class="sort-icon">⇅</span></th>
+                    <th data-col="next_run" onclick="sortBy('next_run')">Next Run <span class="sort-icon">⇅</span></th>
+                    <th data-col="last_result">Last Result</th>
+                    <th data-col="controls">Controls</th>
                   </tr>
                 </thead>
                 <tbody id="task-tbody"></tbody>
@@ -125,6 +149,7 @@
                 <button class="btn btn-danger"  id="d-stop-btn">⏹ Stop</button>
                 <button class="btn btn-warning" id="d-toggle-btn">⏸ Disable</button>
                 <button class="btn"             id="d-edit-btn">✏️ Edit</button>
+                <button class="btn"             id="d-clone-btn">📋 Clone</button>
                 <button class="btn"             id="d-xml-btn">＜/＞ XML</button>
                 <button class="btn btn-danger"  id="d-delete-btn">🗑 Delete</button>
               </div>
@@ -135,6 +160,16 @@
           <!-- Templates -->
           <div id="page-templates" class="page">
             <div id="templates-content" style="padding:16px"></div>
+          </div>
+
+          <!-- Live Monitor -->
+          <div id="page-live" class="page">
+            <div id="live-content" style="padding:16px"></div>
+          </div>
+
+          <!-- Audit Log -->
+          <div id="page-auditlog" class="page">
+            <div id="auditlog-content" style="padding:16px"></div>
           </div>
 
           <!-- Settings -->
@@ -161,6 +196,34 @@
       </div>
       <div id="modal-body"></div>
       <div id="modal-footer"></div>
+    </div>
+  </div>
+
+  <!-- Script editor modal (full-screen inline editor) -->
+  <div id="script-editor-overlay" style="display:none">
+    <div id="script-editor-box">
+      <div id="script-editor-header">
+        <span id="script-editor-title">✏️ Edit Script</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span id="script-editor-lang" class="badge badge-unknown"></span>
+          <span id="script-editor-lines" style="font-size:11px;color:var(--text3)">0 lines</span>
+          <button class="btn btn-primary" onclick="saveScriptFile()">💾 Save to File</button>
+          <button class="icon-btn" onclick="closeScriptEditor()">✕</button>
+        </div>
+      </div>
+      <textarea id="script-editor-content" spellcheck="false"
+                oninput="updateScriptEditorStats()"></textarea>
+    </div>
+  </div>
+
+  <!-- Keyboard shortcut help modal -->
+  <div id="help-modal-overlay" style="display:none">
+    <div id="help-modal-box">
+      <div id="help-modal-header">
+        <span>⌨️ Keyboard Shortcuts</span>
+        <button class="icon-btn" onclick="closeHelpModal()">✕</button>
+      </div>
+      <div id="help-modal-body"></div>
     </div>
   </div>
 
