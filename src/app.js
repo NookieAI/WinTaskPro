@@ -45,10 +45,7 @@ const TAB_ADVANCED = 3;
 const TAB_XML      = 4;
 
 // ── Utility: status bar ───────────────────────────────────────────────────────
-function setStatus(msg) {
-  const el = document.getElementById('status-text');
-  if (el) el.textContent = msg;
-}
+function setStatus(msg) { /* status bar removed */ }
 
 // ── Toast notifications ───────────────────────────────────────────────────────
 let toastTimer = null;
@@ -219,9 +216,10 @@ async function loadDashboard() {
                 <span class="dash-row-right">${escHtml(t.path)}</span>
               </div>`).join('')}
         </div>
-      </div>`;
+      </div>
+      ${total === 0 ? '<div class="dash-empty" style="margin-top:16px;text-align:center">No tasks found in Windows Task Scheduler. Click Task Manager → New Task to create one.</div>' : ''}`;
 
-    setStatus(`Loaded ${total} total tasks`);
+    showToast(`Loaded ${total} total tasks`, 'info');
   } catch (err) {
     content.innerHTML = `<div class="error-msg">⚠ Failed to load dashboard: ${escHtml(String(err))}</div>`;
     setStatus('Error loading dashboard');
@@ -231,11 +229,11 @@ async function loadDashboard() {
 
 // ── Task list ─────────────────────────────────────────────────────────────────
 async function loadTasksForFolder(folder) {
-  setStatus('Loading tasks…');
   // Reset pills to placeholder while loading
   const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
   setVal('stat-total-val', '—'); setVal('stat-running-val', '—');
   setVal('stat-ready-val', '—'); setVal('stat-disabled-val', '—');
+  setVal('stat-queued-val', '—');
   try {
     const tasks = folder === null
       ? await invoke('get_all_tasks')
@@ -249,17 +247,20 @@ async function loadTasksForFolder(folder) {
     const running  = tasks.filter(t => t.status === 'Running').length;
     const ready    = tasks.filter(t => t.status === 'Ready').length;
     const disabled = tasks.filter(t => t.status === 'Disabled').length;
+    const queued   = tasks.filter(t => t.status === 'Queued').length;
 
     setVal('stat-total-val',    total);
     setVal('stat-running-val',  running);
     setVal('stat-ready-val',    ready);
     setVal('stat-disabled-val', disabled);
+    setVal('stat-queued-val',   queued);
 
-    const label = folder === null ? '/ (All)' : folder;
-    setStatus(`Loaded ${total} tasks from ${label}`);
+    const badge = document.getElementById('tasks-nav-badge');
+    if (badge) badge.textContent = total;
+
+    showToast(`Loaded ${total} tasks`, 'info');
   } catch (err) {
     showToast('Failed to load tasks: ' + err, 'error');
-    setStatus('Error loading tasks');
   }
 }
 
@@ -349,7 +350,17 @@ function renderTable() {
 
   if (filteredTasks.length === 0) {
     tbody.innerHTML = '';
-    if (emptyState) emptyState.style.display = 'flex';
+    if (emptyState) {
+      const searchEl = document.getElementById('search-input');
+      const statusEl = document.getElementById('status-filter');
+      const hasFilter = (searchEl && searchEl.value.trim()) || (statusEl && statusEl.value);
+      if (hasFilter) {
+        emptyState.innerHTML = '<div style="font-size:48px">🔍</div><div style="font-size:15px;font-weight:600;margin:8px 0 4px">No tasks match your search</div><div style="font-size:12px;color:var(--text3)">Try clearing the filter.</div>';
+      } else {
+        emptyState.innerHTML = '<div style="font-size:48px">📋</div><div style="font-size:15px;font-weight:600;margin:8px 0 4px">No tasks found</div><div style="font-size:12px;color:var(--text3)">Try adjusting your search or filter, or create a new task.</div>';
+      }
+      emptyState.style.display = 'flex';
+    }
     return;
   }
   if (emptyState) emptyState.style.display = 'none';
@@ -434,7 +445,7 @@ function openDetail(task) {
         <span class="health-dot ${health}" title="Health: ${health}" style="float:right;margin-top:2px"></span>
       </div>
       <table class="detail-table">
-        <tr><td>Path</td><td>${escHtml(task.path)}</td></tr>
+        <tr><td>Path</td><td>${escHtml(task.path)} <button class="icon-btn" id="copy-path-btn" title="Copy path">📋</button></td></tr>
         <tr><td>Status</td><td><span class="badge badge-${badgeClass(task.status)}">${escHtml(task.status)}</span></td></tr>
         <tr><td>Description</td><td>${escHtml(task.description || '—')}</td></tr>
         <tr><td>Author</td><td>${escHtml(task.author || '—')}</td></tr>
@@ -449,7 +460,7 @@ function openDetail(task) {
       <div class="detail-section-title">Triggers</div>
       ${task.triggers && task.triggers.length > 0
         ? task.triggers.map(t => `<div class="detail-item">${escHtml(t)}</div>`).join('')
-        : '<div class="detail-item muted">No triggers defined</div>'}
+        : '<div class="detail-item muted">No triggers defined — this task will never run automatically.</div>'}
     </div>`);
 
   sections.push(`
@@ -459,7 +470,7 @@ function openDetail(task) {
         ? task.actions.map(a => `<div class="detail-item">${escHtml(a)}</div>`).join('')
         : task.action
           ? `<div class="detail-item">${escHtml(task.action)}</div>`
-          : '<div class="detail-item muted">No actions defined</div>'}
+          : '<div class="detail-item muted">No actions defined — this task does nothing when triggered.</div>'}
     </div>`);
 
   sections.push(`
@@ -477,6 +488,10 @@ function openDetail(task) {
     </div>`);
 
   document.getElementById('detail-body').innerHTML = sections.join('');
+
+  // Wire up copy-path button safely (avoids inline onclick XSS)
+  const copyPathBtn = document.getElementById('copy-path-btn');
+  if (copyPathBtn) copyPathBtn.onclick = () => navigator.clipboard.writeText(task.path);
 
   // Wire up buttons
   const runBtn    = document.getElementById('d-run-btn');
@@ -2276,16 +2291,6 @@ async function init() {
     }
   }
 
-  // Check admin status
-  try {
-    const isAdmin = await invoke('is_admin');
-    if (!isAdmin) {
-      const banner = document.getElementById('admin-banner');
-      if (banner) banner.classList.add('show');
-      document.body.classList.add('has-banner');
-    }
-  } catch (_) {}
-
   // Nav click handlers
   document.querySelectorAll('.nav-item[data-page]').forEach(el => {
     el.addEventListener('click', () => showPage(el.dataset.page));
@@ -2859,7 +2864,7 @@ function handleKeyboard(e) {
   if (inInput) return;
   switch (e.key) {
     case 'n': case 'N':
-      if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); openCreateDialog(); }
+      if (!e.ctrlKey && !e.metaKey && currentPage === 'tasks') { e.preventDefault(); openCreateDialog(); }
       break;
     case 'F5': case 'r': case 'R': e.preventDefault(); refreshAll(); break;
     case 'e': case 'E': if (selectedTask) openEditDialog(selectedTask); break;
