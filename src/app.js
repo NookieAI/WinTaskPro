@@ -1781,7 +1781,9 @@ async function submitCreateTask() {
     closeModal();
     refreshAll();
   } catch (err) {
-    showToast((_editTaskPath ? 'Update' : 'Create') + ' failed: ' + err, 'error');
+    const errStr = String(err);
+    console.error((_editTaskPath ? 'update_task' : 'create_task') + ' failed:', errStr);
+    showToast((_editTaskPath ? 'Update' : 'Create') + ' failed: ' + errStr, 'error');
   }
 }
 
