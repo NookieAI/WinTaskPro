@@ -506,13 +506,12 @@ fn main() {
                 })
                 .build(app)?;
 
-            // Minimize to tray on close instead of exiting
+            // Exit when the user closes the main window
             if let Some(win) = app.get_webview_window("main") {
-                let win2 = win.clone();
+                let app_handle = win.app_handle().clone();
                 win.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = win2.hide();
+                    if let tauri::WindowEvent::CloseRequested { .. } = event {
+                        app_handle.exit(0);
                     }
                 });
             }
