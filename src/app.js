@@ -37,6 +37,9 @@ let _colPrefs = {
 // Debounce timer for search input
 let searchDebounce = null;
 
+// Refresh guard — prevents overlapping concurrent refreshes
+let _refreshInProgress = false;
+
 // Create dialog tab indices
 const TAB_GENERAL  = 0;
 const TAB_TRIGGER  = 1;
@@ -280,8 +283,17 @@ function filterTasks() {
     const matchSearch = !search ||
       t.name.toLowerCase().includes(search) ||
       t.path.toLowerCase().includes(search) ||
+      (t.description && t.description.toLowerCase().includes(search)) ||
       (t.actions && t.actions.some(a => a.toLowerCase().includes(search)));
-    const matchStatus = !status || t.status === status;
+    // "Failed" is a virtual status: non-zero result that is not "still running" or "not run yet"
+    let matchStatus;
+    if (status === 'Failed') {
+      matchStatus = t.last_result_code !== 0 &&
+                    t.last_result_code !== TASK_RESULT_RUNNING &&
+                    t.last_result_code !== TASK_RESULT_NOT_RUN;
+    } else {
+      matchStatus = !status || t.status === status;
+    }
     return matchSearch && matchStatus;
   });
 
@@ -378,6 +390,7 @@ function renderTable() {
       <td data-col="cb"><input type="checkbox" class="task-cb" data-path="${escHtml(task.path)}" ${isChecked ? 'checked' : ''} /></td>
       <td data-col="name">
         <span class="task-name">${escHtml(task.name)}</span>
+        <span class="task-path">${escHtml(task.folder || '')}</span>
         ${task.hidden ? '<span class="badge badge-unknown" title="Hidden">H</span>' : ''}
       </td>
       <td data-col="health">${healthDot}</td>
@@ -482,7 +495,7 @@ function openDetail(task) {
         <tr><td>Last Result</td><td class="${resultClass(task.last_result)}">${escHtml(task.last_result || '—')}</td></tr>
       </table>
       <div style="margin-top:8px">
-        <button class="btn" onclick="loadTaskHistory('${escHtml(task.path)}')">📋 Load Full History</button>
+        <button class="btn" id="load-history-btn">📋 Load Full History</button>
       </div>
       <div id="task-history-container" style="margin-top:8px"></div>
     </div>`);
@@ -493,7 +506,11 @@ function openDetail(task) {
   const copyPathBtn = document.getElementById('copy-path-btn');
   if (copyPathBtn) copyPathBtn.onclick = () => navigator.clipboard.writeText(task.path);
 
-  // Wire up buttons
+  // Wire up load-history button safely (avoids inline onclick with path string)
+  const loadHistoryBtn = document.getElementById('load-history-btn');
+  if (loadHistoryBtn) loadHistoryBtn.onclick = () => loadTaskHistory(task.path);
+
+  // Wire up buttons (null-checked to avoid crashes if DOM changes)
   const runBtn    = document.getElementById('d-run-btn');
   const stopBtn   = document.getElementById('d-stop-btn');
   const toggleBtn = document.getElementById('d-toggle-btn');
@@ -502,14 +519,16 @@ function openDetail(task) {
   const cloneBtn  = document.getElementById('d-clone-btn');
   const deleteBtn = document.getElementById('d-delete-btn');
 
-  runBtn.onclick    = () => { appendAuditLog('run_task', task.name, task.path); runTask(task.path); };
-  stopBtn.onclick   = () => { appendAuditLog('stop_task', task.name, task.path); stopTask(task.path); };
-  toggleBtn.onclick = () => toggleTask(task);
-  toggleBtn.textContent = task.enabled ? '⏸ Disable' : '▶ Enable';
-  xmlBtn.onclick    = () => exportXml(task.path);
-  if (editBtn)   editBtn.onclick  = () => openEditDialog(task);
-  if (cloneBtn)  cloneBtn.onclick = () => cloneTask(task);
-  deleteBtn.onclick = () => deleteTask(task.path, task.name);
+  if (runBtn)    runBtn.onclick    = () => { appendAuditLog('run_task', task.name, task.path); runTask(task.path); };
+  if (stopBtn)   stopBtn.onclick   = () => { appendAuditLog('stop_task', task.name, task.path); stopTask(task.path); };
+  if (toggleBtn) {
+    toggleBtn.onclick = () => toggleTask(task);
+    toggleBtn.textContent = task.enabled ? '⏸ Disable' : '▶ Enable';
+  }
+  if (xmlBtn)    xmlBtn.onclick    = () => exportXml(task.path);
+  if (editBtn)   editBtn.onclick   = () => openEditDialog(task);
+  if (cloneBtn)  cloneBtn.onclick  = () => cloneTask(task);
+  if (deleteBtn) deleteBtn.onclick = () => deleteTask(task.path, task.name);
 
   document.getElementById('detail-panel').classList.remove('panel-hidden');
 
@@ -565,8 +584,15 @@ async function toggleTask(task) {
 }
 
 async function deleteTask(path, name) {
+  // Detect system tasks (under \Microsoft\ or \Windows\) and show an extra warning
+  const isSystemTask = path.startsWith('\\Microsoft\\') || path.startsWith('\\Windows\\');
+  const systemWarning = isSystemTask
+    ? `<div class="info-box" style="margin-bottom:12px;border-color:var(--yellow);color:var(--yellow)">⚠ This is a Windows system task. Deleting it may break Windows functionality.</div>`
+    : '';
+
   openModal('🗑 Delete Task',
     `<div style="padding:16px 16px 8px">
+       ${systemWarning}
        <div style="font-size:16px;font-weight:700;color:var(--red);margin-bottom:6px">${escHtml(name)}</div>
        <div style="font-size:11px;color:var(--text3);font-family:monospace;word-break:break-all;margin-bottom:14px">${escHtml(path)}</div>
        <p style="color:var(--text2);font-size:13px">This action <strong>cannot be undone</strong>. The task will be permanently removed from Windows Task Scheduler.</p>
@@ -608,10 +634,17 @@ let _lastExportedXml    = '';
 let _copyFeedbackTimer  = null;
 
 function syntaxHighlightXml(xml) {
-  // Escape first, then wrap tag names in colour spans
-  return escHtml(xml)
+  // Escape first, then wrap syntax elements in colour spans.
+  // Process tag-by-tag to safely highlight attribute names/values only within tags.
+  const escaped = escHtml(xml);
+  return escaped
+    // XML comments (apply first so tag regexes don't match inside comments)
+    .replace(/(&lt;!--[\s\S]*?--&gt;)/g, '<span class="xml-comment">$1</span>')
+    // Tag names (opening, closing, and self-closing)
     .replace(/(&lt;\/?)([\w:.]+)/g, '$1<span class="xml-tag-name">$2</span>')
-    .replace(/(&lt;!--[\s\S]*?--&gt;)/g, '<span class="xml-comment">$1</span>');
+    // Attribute names followed by ="..." values (only double-quoted via &quot; entities)
+    .replace(/([\w:]+)(=&quot;[^&]*&quot;)/g,
+             '<span class="xml-attr-name">$1</span><span class="xml-attr-value">$2</span>');
 }
 
 async function exportXml(path) {
@@ -657,30 +690,36 @@ async function exportXml(path) {
 
 // ── Refresh all ───────────────────────────────────────────────────────────────
 async function refreshAll() {
-  await refreshFolders();
-  await loadTasksForFolder(selectedFolder);
+  if (_refreshInProgress) return;   // prevent overlapping concurrent refreshes
+  _refreshInProgress = true;
+  try {
+    await refreshFolders();
+    await loadTasksForFolder(selectedFolder);
 
-  // Check for task failures and notify if enabled
-  const notifyEnabled = localStorage.getItem('wtp_notifyOnFailure') === 'true';
-  if (notifyEnabled && allTasks.length > 0) {
-    allTasks.forEach(task => {
-      const prev = _prevTaskResults[task.path];
-      const code = task.last_result_code;
-      // Non-zero, non-running, non-never-run = failure
-      if (prev !== undefined && prev !== code && code !== 0 && code !== TASK_RESULT_RUNNING && code !== TASK_RESULT_NOT_RUN) {
-        if (Notification.permission === 'granted') {
-          new Notification('WinTaskPro — Task Failed', {
-            body: task.name + ' failed with ' + task.last_result,
-            icon: 'icon.png',
-          });
+    // Check for task failures and notify if enabled
+    const notifyEnabled = localStorage.getItem('wtp_notifyOnFailure') === 'true';
+    if (notifyEnabled && allTasks.length > 0) {
+      allTasks.forEach(task => {
+        const prev = _prevTaskResults[task.path];
+        const code = task.last_result_code;
+        // Non-zero, non-running, non-never-run = failure
+        if (prev !== undefined && prev !== code && code !== 0 && code !== TASK_RESULT_RUNNING && code !== TASK_RESULT_NOT_RUN) {
+          if (Notification.permission === 'granted') {
+            new Notification('WinTaskPro — Task Failed', {
+              body: task.name + ' failed with ' + task.last_result,
+              icon: 'icon.png',
+            });
+          }
         }
-      }
-    });
-    // Update previous results map
-    allTasks.forEach(t => { _prevTaskResults[t.path] = t.last_result_code; });
-  }
+      });
+      // Update previous results map
+      allTasks.forEach(t => { _prevTaskResults[t.path] = t.last_result_code; });
+    }
 
-  showToast('Refreshed', 'success');
+    showToast('Refreshed', 'success');
+  } finally {
+    _refreshInProgress = false;
+  }
 }
 
 // ── Create task dialog ────────────────────────────────────────────────────────
@@ -2503,8 +2542,10 @@ function cloneTask(task) {
     'on idle':'Idle','idle':'Idle',
   };
   const normalizedTrigger = triggerDisplayMap[rawTrigger.toLowerCase()] || 'Once';
+  // Strip any existing " (Copy)" / " (Copy N)" suffix to avoid "TaskName (Copy) (Copy)"
+  const baseName = task.name.replace(/ \(Copy(?: \d+)?\)$/, '');
   const prefill = {
-    name:         task.name + '_Copy',
+    name:         baseName + ' (Copy)',
     folder:       task.folder,
     description:  task.description || '',
     run_as_user:  task.run_as_user || '',

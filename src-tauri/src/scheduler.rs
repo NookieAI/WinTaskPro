@@ -254,11 +254,23 @@ pub struct CreateTaskParams {
 // ── Engine ────────────────────────────────────────────────────────────────────
 pub struct SchedulerEngine {
     service: ITaskService,
+    /// Whether this instance successfully called CoInitializeEx (S_OK).
+    /// If true, CoUninitialize must be called in Drop to balance the init.
+    com_initialized: bool,
 }
 
 // SAFETY: we only ever call this from behind a Mutex
 unsafe impl Send for SchedulerEngine {}
 unsafe impl Sync for SchedulerEngine {}
+
+impl Drop for SchedulerEngine {
+    fn drop(&mut self) {
+        if self.com_initialized {
+            // Balance the CoInitializeEx(S_OK) call we made in new()
+            unsafe { CoUninitialize(); }
+        }
+    }
+}
 
 impl SchedulerEngine {
     pub fn new() -> Result<Self> {
@@ -266,6 +278,11 @@ impl SchedulerEngine {
             // Use APARTMENTTHREADED to match Tauri/tao's COM mode
             // Ignore RPC_E_CHANGED_MODE — means COM already initialized, which is fine
             let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            // Track whether WE initialized COM so Drop can call CoUninitialize.
+            // S_OK (0) = we initialized (must uninitialize); S_FALSE (1) = COM was
+            // already initialized in the same apartment (must NOT uninitialize);
+            // RPC_E_CHANGED_MODE = different apartment already, must NOT uninitialize.
+            let com_initialized = hr.0 == 0; // true only for S_OK — we own this init
             if hr.is_err() {
                 let code = hr.0;
                 // 0x80010106 = RPC_E_CHANGED_MODE — already initialized, safe to continue
@@ -280,7 +297,7 @@ impl SchedulerEngine {
             let v = VARIANT::default();
             service.Connect(&v, &v, &v, &v)?;
 
-            Ok(SchedulerEngine { service })
+            Ok(SchedulerEngine { service, com_initialized })
         }
     }
 
@@ -962,7 +979,9 @@ impl SchedulerEngine {
             });
         }
 
-        // Free COM-allocated memory
+        // SAFETY: `times` was allocated by the Task Scheduler COM server via
+        // CoTaskMemAlloc (as documented for GetRunTimes), so CoTaskMemFree is
+        // the correct way to release it.
         unsafe { CoTaskMemFree(Some(times as *mut _)); }
 
         Ok(records)
@@ -991,5 +1010,32 @@ fn split_path(path: &str) -> (&str, &str) {
     match path.rfind('\\') {
         Some(i) if i > 0 => (&path[..i], &path[i + 1..]),
         _                 => ("\\", path.trim_start_matches('\\')),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_path;
+
+    #[test]
+    fn test_split_path_nested() {
+        assert_eq!(split_path("\\Folder\\Task"), ("\\Folder", "Task"));
+    }
+
+    #[test]
+    fn test_split_path_root_task() {
+        // Root-level task: \TaskName → ("\\", "TaskName")
+        assert_eq!(split_path("\\TaskName"), ("\\", "TaskName"));
+    }
+
+    #[test]
+    fn test_split_path_deeply_nested() {
+        assert_eq!(split_path("\\A\\B\\Task"), ("\\A\\B", "Task"));
+    }
+
+    #[test]
+    fn test_split_path_no_prefix() {
+        // Task name without leading backslash — treated as root-level
+        assert_eq!(split_path("TaskName"), ("\\", "TaskName"));
     }
 }
