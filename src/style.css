@@ -16,7 +16,6 @@
   --red:       #ef4444;
   --sidebar-w: 220px;
   --topbar-h:  52px;
-  --status-h:  28px;
   --panel-w:   340px;
   --radius:    8px;
   font-family: 'Segoe UI', system-ui, sans-serif;
@@ -31,22 +30,6 @@ html, body {
   overflow: hidden;
 }
 
-/* ── Admin banner ─────────────────────────────────────────────────────────── */
-#admin-banner {
-  display: none;
-  background: var(--red);
-  color: #fff;
-  padding: 7px 16px;
-  font-size: 12px;
-  text-align: center;
-  position: fixed;
-  top: 0; left: 0; right: 0;
-  z-index: 9999;
-  height: 34px;
-  line-height: 20px;
-}
-#admin-banner.show { display: block; }
-
 /* ── Root layout ──────────────────────────────────────────────────────────── */
 #root-wrap {
   display: flex;
@@ -55,7 +38,6 @@ html, body {
   height: 100vh;
   overflow: hidden;
 }
-body.has-banner #root-wrap { padding-top: 34px; }
 
 #layout {
   display: flex;
@@ -102,6 +84,20 @@ body.has-banner #root-wrap { padding-top: 34px; }
 .nav-item:hover  { background: var(--bg3); color: var(--text); }
 .nav-item.active { background: var(--bg3); color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
 .nav-icon { font-size: 15px; width: 20px; text-align: center; }
+
+.nav-badge {
+  margin-left: auto;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 18px;
+  text-align: center;
+  display: none;
+}
+.nav-badge:not(:empty) { display: inline-block; }
 
 #folder-section {
   flex: 1;
@@ -362,13 +358,13 @@ body.has-banner #root-wrap { padding-top: 34px; }
 /* ── Empty state ──────────────────────────────────────────────────────────── */
 #empty-state {
   display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   text-align: center;
   padding: 80px 20px;
   color: var(--text3);
 }
-.empty-icon  { font-size: 48px; margin-bottom: 12px; }
-.empty-title { font-size: 16px; font-weight: 600; color: var(--text2); margin-bottom: 6px; }
-.empty-sub   { font-size: 13px; }
 
 /* ── Detail panel ─────────────────────────────────────────────────────────── */
 #detail-panel {
@@ -576,7 +572,7 @@ select.form-control   { cursor: pointer; }
 /* ── Toast ────────────────────────────────────────────────────────────────── */
 #toast {
   position: fixed;
-  bottom: 36px;
+  bottom: 16px;
   left: 50%;
   transform: translateX(-50%) translateY(12px);
   background: var(--bg2);
@@ -594,20 +590,7 @@ select.form-control   { cursor: pointer; }
 #toast.show         { opacity: 1; transform: translateX(-50%) translateY(0); }
 #toast.show.success { border-color: var(--green); color: var(--green); }
 #toast.show.error   { border-color: var(--red);   color: var(--red); }
-#toast.show.info    { border-color: var(--accent); color: var(--accent); }
-
-/* ── Status bar ───────────────────────────────────────────────────────────── */
-#statusbar {
-  height: var(--status-h);
-  background: var(--accent);
-  display: flex;
-  align-items: center;
-  padding: 0 14px;
-  font-size: 11px;
-  color: #fff;
-  flex-shrink: 0;
-  gap: 8px;
-}
+#toast.show.info    { border-color: #334155; background: #334155; color: #e2e8f0; }
 
 /* ── Search / select ──────────────────────────────────────────────────────── */
 #search-input, #status-filter {

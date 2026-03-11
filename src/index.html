@@ -9,12 +9,6 @@
 </head>
 <body>
 
-  <!-- Admin banner -->
-  <div id="admin-banner">
-    ⚠ Not running as Administrator — some tasks may be inaccessible.
-    Right-click the .exe and choose <strong>Run as administrator</strong>.
-  </div>
-
   <div id="root-wrap">
     <div id="layout">
 
@@ -31,6 +25,7 @@
           </div>
           <div class="nav-item" data-page="tasks">
             <span class="nav-icon">📋</span><span>Task Manager</span>
+            <span class="nav-badge" id="tasks-nav-badge"></span>
           </div>
           <div class="nav-item" data-page="live">
             <span class="nav-icon">🔴</span><span>Live Monitor</span>
@@ -70,7 +65,7 @@
           </div>
           <div id="topbar-right">
             <span id="live-refresh-indicator" style="display:none" title="Auto-refresh active">🔄 Live</span>
-            <input type="text" id="search-input" placeholder="🔍  Search tasks…" oninput="onSearchInput()" />
+            <input type="text" id="search-input" placeholder="🔍 Search by name, trigger or action…" oninput="onSearchInput()" />
             <select id="status-filter" onchange="filterTasks()">
               <option value="">All Statuses</option>
               <option value="Ready">Ready</option>
@@ -99,6 +94,7 @@
               <div class="stat-pill running">Running <strong id="stat-running-val">—</strong></div>
               <div class="stat-pill ready">Ready <strong id="stat-ready-val">—</strong></div>
               <div class="stat-pill disabled">Disabled <strong id="stat-disabled-val">—</strong></div>
+              <div class="stat-pill">Queued <strong id="stat-queued-val">—</strong></div>
             </div>
             <div id="table-wrap">
               <!-- Bulk action toolbar (shown when tasks are selected) -->
@@ -131,10 +127,10 @@
                 </thead>
                 <tbody id="task-tbody"></tbody>
               </table>
-              <div id="empty-state">
-                <div class="empty-icon">📋</div>
-                <div class="empty-title">No tasks found</div>
-                <div class="empty-sub">Select a folder or adjust your search</div>
+              <div id="empty-state" style="display:none">
+                <div style="font-size:48px">📋</div>
+                <div style="font-size:15px;font-weight:600;margin:8px 0 4px">No tasks found</div>
+                <div style="font-size:12px;color:var(--text3)">Try adjusting your search or filter, or create a new task.</div>
               </div>
             </div>
 
@@ -181,10 +177,7 @@
       </div><!-- /main -->
     </div><!-- /layout -->
 
-    <!-- Status bar -->
-    <div id="statusbar">
-      <span id="status-text">Ready</span>
-    </div>
+    <!-- Status bar removed -->
   </div><!-- /root-wrap -->
 
   <!-- Modal -->
