@@ -522,9 +522,8 @@ select.form-control   { cursor: pointer; }
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  width: 600px;
-  max-width: 92vw;
-  max-height: 85vh;
+  width: min(600px, 96vw);
+  max-height: 88vh;
   display: flex;
   flex-direction: column;
   box-shadow: 0 24px 64px rgba(0,0,0,.7);

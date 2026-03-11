@@ -110,6 +110,66 @@ pub struct TaskInfo {
     pub run_as_user:      String,
     pub hidden:           bool,
     pub enabled:          bool,
+
+    // ── Trigger details ───────────────────────────────────────────────────────
+    #[serde(default)]
+    pub trigger_type:         String,   // "Once","Daily","Weekly","Monthly","Boot","Logon","Idle","SessionLock","SessionUnlock","Interval","Custom"
+    #[serde(default)]
+    pub trigger_start:        String,   // ISO datetime string
+    #[serde(default)]
+    pub trigger_interval:     u32,      // days_interval / weeks_interval / idle_minutes
+    #[serde(default)]
+    pub trigger_days_of_week: u32,      // bitmask Sun=1,Mon=2,Tue=4,Wed=8,Thu=16,Fri=32,Sat=64
+    #[serde(default)]
+    pub trigger_months:       u32,      // bitmask Jan=1,Feb=2,…,Dec=2048
+    #[serde(default)]
+    pub trigger_days_of_month:u32,      // bitmask bit0=day1…bit30=day31
+
+    // ── Advanced / repetition ─────────────────────────────────────────────────
+    #[serde(default)]
+    pub exec_time_limit:      String,   // ISO 8601 duration, e.g. "PT1H" or "PT0S" = unlimited
+    #[serde(default)]
+    pub repetition_interval:  String,   // ISO 8601 duration between repetitions
+    #[serde(default)]
+    pub repetition_duration:  String,   // ISO 8601 total repetition window; "" = indefinite
+    #[serde(default)]
+    pub stop_at_duration_end: bool,
+    #[serde(default)]
+    pub random_delay:         String,   // ISO 8601 duration
+    #[serde(default)]
+    pub end_boundary:         String,   // ISO datetime or ""
+    #[serde(default)]
+    pub boot_delay:           String,   // ISO 8601 duration for Boot/Logon/Session triggers
+
+    // ── Conditions ────────────────────────────────────────────────────────────
+    #[serde(default)]
+    pub wake_to_run:               bool,
+    #[serde(default)]
+    pub run_only_if_network:       bool,
+    #[serde(default)]
+    pub run_only_if_idle:          bool,
+    #[serde(default)]
+    pub disallow_on_battery_start: bool,
+    #[serde(default)]
+    pub stop_on_battery:           bool,
+
+    // ── Settings ──────────────────────────────────────────────────────────────
+    #[serde(default = "default_priority")]
+    pub priority:       u32,            // 0–10, default 7
+    #[serde(default)]
+    pub stop_if_running:bool,           // TASK_INSTANCES_STOP_EXISTING
+    #[serde(default)]
+    pub delete_expired: bool,
+
+    // ── Action details (first exec action) ────────────────────────────────────
+    #[serde(default)]
+    pub program_path:   String,
+    #[serde(default)]
+    pub program_args:   String,
+    #[serde(default)]
+    pub working_dir:    String,
+    #[serde(default)]
+    pub run_level:      u32,            // 0 = LUA (standard), 1 = Highest
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -298,31 +358,191 @@ impl SchedulerEngine {
             h.as_bool()
         };
 
-        // Triggers
+        // ── Triggers ─────────────────────────────────────────────────────────
         let trig_col = unsafe { defn.Triggers()? };
         let tcnt     = unsafe { read_i32(|p| trig_col.Count(p)) };
-        let mut triggers = Vec::new();
+        let mut triggers              = Vec::new();
+        let mut trigger_type          = String::new();
+        let mut trigger_start         = String::new();
+        let mut trigger_interval      = 0u32;
+        let mut trigger_days_of_week  = 0u32;
+        let mut trigger_months        = 0u32;
+        let mut trigger_days_of_month = 0u32;
+        let mut exec_time_limit       = String::new();
+        let mut repetition_interval   = String::new();
+        let mut repetition_duration   = String::new();
+        let mut stop_at_duration_end  = false;
+        let mut random_delay          = String::new();
+        let mut end_boundary          = String::new();
+        let mut boot_delay            = String::new();
+
         for j in 1..=tcnt {
             if let Ok(t) = unsafe { trig_col.get_Item(j) } {
                 let mut ttype = TASK_TRIGGER_TYPE2::default();
                 unsafe { let _ = t.Type(&mut ttype); }
                 triggers.push(trigger_str(ttype));
+
+                // Read detailed properties only from the first trigger
+                if j == 1 {
+                    trigger_start   = unsafe { read_bstr(|b| t.StartBoundary(b)) };
+                    end_boundary    = unsafe { read_bstr(|b| t.EndBoundary(b)) };
+                    exec_time_limit = unsafe { read_bstr(|b| t.ExecutionTimeLimit(b)) };
+
+                    // Repetition pattern
+                    if let Ok(rep) = unsafe { t.Repetition() } {
+                        repetition_interval  = unsafe { read_bstr(|b| rep.Interval(b)) };
+                        repetition_duration  = unsafe { read_bstr(|b| rep.Duration(b)) };
+                        stop_at_duration_end = unsafe {
+                            let mut v = VARIANT_FALSE;
+                            let _ = rep.StopAtDurationEnd(&mut v);
+                            v.as_bool()
+                        };
+                    }
+
+                    match ttype {
+                        TASK_TRIGGER_DAILY => {
+                            let mut days: i16 = 1;
+                            if let Ok(dt) = t.cast::<IDailyTrigger>() {
+                                unsafe { let _ = dt.DaysInterval(&mut days); }
+                                random_delay = unsafe { read_bstr(|b| dt.RandomDelay(b)) };
+                            }
+                            trigger_interval = days.max(1) as u32;
+                            // Daily with interval=1 and a repetition_interval → report as Interval
+                            trigger_type = if days <= 1 && !repetition_interval.is_empty() {
+                                "Interval".into()
+                            } else {
+                                "Daily".into()
+                            };
+                        }
+                        TASK_TRIGGER_WEEKLY => {
+                            trigger_type = "Weekly".into();
+                            if let Ok(wt) = t.cast::<IWeeklyTrigger>() {
+                                let mut wi: i16 = 1;
+                                let mut dow: i16 = 0;
+                                unsafe {
+                                    let _ = wt.WeeksInterval(&mut wi);
+                                    let _ = wt.DaysOfWeek(&mut dow);
+                                }
+                                random_delay         = unsafe { read_bstr(|b| wt.RandomDelay(b)) };
+                                trigger_interval     = wi.max(1) as u32;
+                                trigger_days_of_week = dow as u32;
+                            }
+                        }
+                        TASK_TRIGGER_MONTHLY => {
+                            trigger_type = "Monthly".into();
+                            if let Ok(mt) = t.cast::<IMonthlyTrigger>() {
+                                let mut dom: i32 = 0;
+                                let mut moy: i16 = 0;
+                                unsafe {
+                                    let _ = mt.DaysOfMonth(&mut dom);
+                                    let _ = mt.MonthsOfYear(&mut moy);
+                                }
+                                random_delay          = unsafe { read_bstr(|b| mt.RandomDelay(b)) };
+                                trigger_days_of_month = dom as u32;
+                                trigger_months        = moy as u32;
+                            }
+                        }
+                        TASK_TRIGGER_TIME => {
+                            trigger_type = "Once".into();
+                            if let Ok(tt) = t.cast::<ITimeTrigger>() {
+                                random_delay = unsafe { read_bstr(|b| tt.RandomDelay(b)) };
+                            }
+                        }
+                        TASK_TRIGGER_BOOT => {
+                            trigger_type = "Boot".into();
+                            if let Ok(bt) = t.cast::<IBootTrigger>() {
+                                boot_delay = unsafe { read_bstr(|b| bt.Delay(b)) };
+                            }
+                        }
+                        TASK_TRIGGER_LOGON => {
+                            trigger_type = "Logon".into();
+                            if let Ok(lt) = t.cast::<ILogonTrigger>() {
+                                boot_delay = unsafe { read_bstr(|b| lt.Delay(b)) };
+                            }
+                        }
+                        TASK_TRIGGER_IDLE => {
+                            trigger_type = "Idle".into();
+                        }
+                        TASK_TRIGGER_SESSION_STATE_CHANGE => {
+                            if let Ok(sst) = t.cast::<ISessionStateChangeTrigger>() {
+                                let mut sc = TASK_SESSION_STATE_CHANGE_TYPE::default();
+                                unsafe { let _ = sst.StateChange(&mut sc); }
+                                trigger_type = if sc == TASK_SESSION_UNLOCK {
+                                    "SessionUnlock".into()
+                                } else {
+                                    "SessionLock".into()
+                                };
+                                boot_delay = unsafe { read_bstr(|b| sst.Delay(b)) };
+                            } else {
+                                trigger_type = "Custom".into();
+                            }
+                        }
+                        _ => { trigger_type = "Custom".into(); }
+                    }
+                }
             }
         }
 
-        // Actions
+        // ── Settings ─────────────────────────────────────────────────────────
+        let wake_to_run = unsafe {
+            let mut v = VARIANT_FALSE; let _ = settings.WakeToRun(&mut v); v.as_bool()
+        };
+        let run_only_if_network = unsafe {
+            let mut v = VARIANT_FALSE; let _ = settings.RunOnlyIfNetworkAvailable(&mut v); v.as_bool()
+        };
+        let run_only_if_idle = unsafe {
+            let mut v = VARIANT_FALSE; let _ = settings.RunOnlyIfIdle(&mut v); v.as_bool()
+        };
+        let disallow_on_battery_start = unsafe {
+            let mut v = VARIANT_FALSE; let _ = settings.DisallowStartIfOnBatteries(&mut v); v.as_bool()
+        };
+        let stop_on_battery = unsafe {
+            let mut v = VARIANT_FALSE; let _ = settings.StopIfGoingOnBatteries(&mut v); v.as_bool()
+        };
+        let mut priority_val: i32 = 7;
+        unsafe { let _ = settings.Priority(&mut priority_val); }
+        let priority = priority_val.clamp(0, 10) as u32;
+
+        let mut multi_inst = TASK_INSTANCES_IGNORE_NEW;
+        unsafe { let _ = settings.MultipleInstances(&mut multi_inst); }
+        let stop_if_running = multi_inst == TASK_INSTANCES_STOP_EXISTING;
+
+        let delete_after = unsafe { read_bstr(|b| settings.DeleteExpiredTaskAfter(b)) };
+        let delete_expired = !delete_after.is_empty();
+
+        // Use settings ExecutionTimeLimit as fallback if trigger didn't set one
+        if exec_time_limit.is_empty() {
+            exec_time_limit = unsafe { read_bstr(|b| settings.ExecutionTimeLimit(b)) };
+        }
+
+        // ── Actions ───────────────────────────────────────────────────────────
         let act_col = unsafe { defn.Actions()? };
         let acnt    = unsafe { read_i32(|p| act_col.Count(p)) };
-        let mut actions = Vec::new();
+        let mut actions      = Vec::new();
+        let mut program_path = String::new();
+        let mut program_args = String::new();
+        let mut working_dir  = String::new();
+
         for j in 1..=acnt {
             if let Ok(act) = unsafe { act_col.get_Item(j) } {
                 if let Ok(exec) = act.cast::<IExecAction>() {
                     let p = unsafe { read_bstr(|b| exec.Path(b)) };
                     let a = unsafe { read_bstr(|b| exec.Arguments(b)) };
+                    // Capture first action's details for the new fields
+                    if j == 1 {
+                        program_path = p.clone();
+                        program_args = a.clone();
+                        working_dir  = unsafe { read_bstr(|b| exec.WorkingDirectory(b)) };
+                    }
                     actions.push(if a.is_empty() { p } else { format!("{} {}", p, a) });
                 }
             }
         }
+
+        // ── Principal ─────────────────────────────────────────────────────────
+        let mut rl = TASK_RUNLEVEL_LUA;
+        unsafe { let _ = principal.RunLevel(&mut rl); }
+        let run_level = if rl == TASK_RUNLEVEL_HIGHEST { 1u32 } else { 0u32 };
 
         Ok(TaskInfo {
             name, path,
@@ -336,6 +556,19 @@ impl SchedulerEngine {
             description,      author,
             run_as_user,      hidden,
             enabled,
+            // Trigger details
+            trigger_type, trigger_start, trigger_interval,
+            trigger_days_of_week, trigger_months, trigger_days_of_month,
+            // Advanced
+            exec_time_limit, repetition_interval, repetition_duration,
+            stop_at_duration_end, random_delay, end_boundary, boot_delay,
+            // Conditions
+            wake_to_run, run_only_if_network, run_only_if_idle,
+            disallow_on_battery_start, stop_on_battery,
+            // Settings
+            priority, stop_if_running, delete_expired,
+            // Action details
+            program_path, program_args, working_dir, run_level,
         })
     }
 
@@ -626,7 +859,7 @@ impl SchedulerEngine {
     // ── Running tasks ─────────────────────────────────────────────────────────
     pub fn get_running_tasks(&self) -> Result<Vec<RunningTaskInfo>> {
         let col = unsafe { self.service.GetRunningTasks(0)? };
-        let count = unsafe { read_i32(|p| col.Count(p)) };
+        let count = unsafe { col.Count().unwrap_or(0) };
         let mut out = Vec::new();
         for i in 1..=count {
             let v = vi(i);
@@ -634,9 +867,9 @@ impl SchedulerEngine {
                 Ok(t)  => t,
                 Err(_) => continue,
             };
-            let name           = unsafe { read_bstr(|b| rt.Name(b)) };
-            let path           = unsafe { read_bstr(|b| rt.Path(b)) };
-            let current_action = unsafe { read_bstr(|b| rt.CurrentAction(b)) };
+            let name           = unsafe { rt.Name().map(|s| s.to_string()).unwrap_or_default() };
+            let path           = unsafe { rt.Path().map(|s| s.to_string()).unwrap_or_default() };
+            let current_action = unsafe { rt.CurrentAction().map(|s| s.to_string()).unwrap_or_default() };
             let mut state_val  = TASK_STATE::default();
             unsafe { let _ = rt.State(&mut state_val); }
             let (state, _) = task_state_str(state_val);

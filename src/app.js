@@ -699,6 +699,8 @@ async function openCreateDialog(prefill = {}) {
     ).join('');
   } catch (_) {}
 
+  const prefillPriority = prefill.priority !== undefined ? prefill.priority : 7;
+
   const bodyHtml = `
     <div class="modal-tabs" id="create-tabs">
       <div class="modal-tab active" data-tab="0">General</div>
@@ -770,7 +772,7 @@ async function openCreateDialog(prefill = {}) {
       <div id="tf-once">
         <div class="form-group">
           <label>Date / Time *</label>
-          <input type="datetime-local" id="cf-datetime" class="form-control" value="${escHtml(prefill.trigger_value || '')}" />
+          <input type="datetime-local" id="cf-datetime" class="form-control" value="${escHtml(prefill.trigger_datetime || prefill.trigger_value || '')}" />
           <div class="form-error" id="err-datetime">A start date/time is required</div>
         </div>
       </div>
@@ -1109,17 +1111,17 @@ async function openCreateDialog(prefill = {}) {
       <div class="form-group">
         <label>Thread Priority</label>
         <select id="cf-priority" class="form-control">
-          <option value="0">0 — Critical (highest CPU priority)</option>
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3">3</option>
-          <option value="4">4</option>
-          <option value="5">5</option>
-          <option value="6">6</option>
-          <option value="7" selected>7 — Normal (default)</option>
-          <option value="8">8</option>
-          <option value="9">9</option>
-          <option value="10">10 — Lowest</option>
+          <option value="0"  ${prefillPriority === 0  ? 'selected' : ''}>0 — Critical (highest CPU priority)</option>
+          <option value="1"  ${prefillPriority === 1  ? 'selected' : ''}>1</option>
+          <option value="2"  ${prefillPriority === 2  ? 'selected' : ''}>2</option>
+          <option value="3"  ${prefillPriority === 3  ? 'selected' : ''}>3</option>
+          <option value="4"  ${prefillPriority === 4  ? 'selected' : ''}>4</option>
+          <option value="5"  ${prefillPriority === 5  ? 'selected' : ''}>5</option>
+          <option value="6"  ${prefillPriority === 6  ? 'selected' : ''}>6</option>
+          <option value="7"  ${prefillPriority === 7  ? 'selected' : ''}>7 — Normal (default)</option>
+          <option value="8"  ${prefillPriority === 8  ? 'selected' : ''}>8</option>
+          <option value="9"  ${prefillPriority === 9  ? 'selected' : ''}>9</option>
+          <option value="10" ${prefillPriority === 10 ? 'selected' : ''}>10 — Lowest</option>
         </select>
       </div>
       <div class="form-group">
@@ -1309,27 +1311,74 @@ function daysOfMonthBitmask() {
 
 // ── Open edit dialog (pre-fill create dialog and switch to edit mode) ─────────
 async function openEditDialog(task) {
-  // Normalize the trigger display string (from trigger_str()) to the enum key used by the backend
-  const rawTrigger = task.triggers && task.triggers.length > 0 ? task.triggers[0] : 'Once';
-  const triggerDisplayMap = {
+  // Map trigger_type string to the enum key used by openCreateDialog
+  const triggerTypeMap = {
     'once': 'Once', 'daily': 'Daily', 'weekly': 'Weekly', 'monthly': 'Monthly',
     'at boot': 'Boot', 'boot': 'Boot',
     'at logon': 'Logon', 'logon': 'Logon',
     'on idle': 'Idle', 'idle': 'Idle',
+    'interval': 'Interval',
     'sessionlock': 'SessionLock', 'session lock': 'SessionLock',
     'sessionunlock': 'SessionUnlock', 'session unlock': 'SessionUnlock',
   };
-  const normalizedTrigger = triggerDisplayMap[rawTrigger.toLowerCase()] || 'Once';
+
+  // Use task.trigger_type (new field) if available, else fall back to triggers[0]
+  const rawTrigger = (task.trigger_type || (task.triggers && task.triggers[0]) || 'Once').toLowerCase();
+  const normalizedTrigger = triggerTypeMap[rawTrigger] || 'Once';
+
+  // Normalize trigger start: extract time-only (HH:MM) for time-based triggers,
+  // and full datetime for Once. Backend returns ISO 8601 like "2024-01-15T08:00:00".
+  const startFull = task.trigger_start || '';
+  const tIdx      = startFull.indexOf('T');
+  const startTime = tIdx >= 0 ? startFull.slice(tIdx + 1, tIdx + 6) : '';
 
   const prefill = {
     name:         task.name,
     folder:       task.folder,
     description:  task.description || '',
     run_as_user:  task.run_as_user || '',
-    run_level:    0,
+    run_level:    task.run_level || 0,
     hidden:       task.hidden || false,
     enabled:      task.enabled !== false,
-    trigger_type: normalizedTrigger,
+
+    // Trigger
+    trigger_type:      normalizedTrigger,
+    trigger_value:     startTime || '08:00',
+    trigger_datetime:  startFull.slice(0, 16),
+    days_interval:     task.trigger_interval || 1,
+
+    // Advanced
+    exec_time_limit:      task.exec_time_limit || 'PT0S',
+    repetition_interval:  task.repetition_interval || '',
+    repetition_duration:  task.repetition_duration || '',
+    stop_at_duration_end: task.stop_at_duration_end || false,
+    random_delay:         task.random_delay || '',
+    end_boundary:         task.end_boundary || '',
+    boot_delay:           task.boot_delay || '',
+
+    // Conditions
+    wake_to_run:               task.wake_to_run || false,
+    run_only_if_network:       task.run_only_if_network || false,
+    run_only_if_idle:          task.run_only_if_idle || false,
+    disallow_on_battery_start: task.disallow_on_battery_start || false,
+    stop_on_battery:           task.stop_on_battery || false,
+
+    // Settings
+    priority:        task.priority !== undefined ? task.priority : 7,
+    stop_if_running: task.stop_if_running || false,
+    delete_expired:  task.delete_expired || false,
+
+    // Action
+    program:     task.program_path || '',
+    arguments:   task.program_args || '',
+    working_dir: task.working_dir || '',
+
+    // Weekly days of week
+    days_of_week: task.trigger_days_of_week || 0,
+    // Monthly months
+    months_of_year: task.trigger_months || 0,
+    // Monthly days
+    days_of_month_mask: task.trigger_days_of_month || 0,
   };
 
   await openCreateDialog(prefill);
@@ -1340,6 +1389,125 @@ async function openEditDialog(task) {
   const submitBtn = document.getElementById('create-submit-btn');
   if (titleEl)   titleEl.textContent   = '✏️ Edit Task';
   if (submitBtn) submitBtn.textContent = '💾 Save Changes';
+
+  // Pre-fill advanced duration selects (these need the DOM to exist)
+  setDurationSelect('cf-exec-limit',   'cf-exec-limit-custom',   prefill.exec_time_limit);
+  setDurationSelect('cf-random-delay', 'cf-random-delay-custom', prefill.random_delay);
+  setDurationSelect('cf-rep-interval', 'cf-rep-interval-custom', prefill.repetition_interval);
+  setDurationSelect('cf-rep-duration', 'cf-rep-duration-custom', prefill.repetition_duration);
+  setDurationSelect('cf-boot-delay',   'cf-boot-delay-custom',   prefill.boot_delay);
+
+  // For Interval trigger: parse the repetition_interval ISO 8601 duration into
+  // the value/unit quick-pick fields (e.g. "PT30M" → 30 Minutes, "PT2H" → 2 Hours)
+  if (normalizedTrigger === 'Interval' && prefill.repetition_interval) {
+    const durStr = prefill.repetition_interval; // e.g. "PT30M", "PT2H", "PT1H30M"
+    // Parse ISO 8601 duration: extract hours and minutes components
+    const hMatch = durStr.match(/(\d+)H/);
+    const mMatch = durStr.match(/(\d+)M/);
+    const totalMinutes = (hMatch ? parseInt(hMatch[1], 10) * 60 : 0) + (mMatch ? parseInt(mMatch[1], 10) : 0);
+    const valEl  = document.getElementById('cf-interval-value');
+    const unitEl = document.getElementById('cf-interval-unit');
+    if (valEl && unitEl && totalMinutes > 0) {
+      if (totalMinutes % 60 === 0) {
+        valEl.value  = String(totalMinutes / 60);
+        unitEl.value = 'Hours';
+      } else {
+        valEl.value  = String(totalMinutes);
+        unitEl.value = 'Minutes';
+      }
+    }
+    // Pre-fill interval start time
+    const intervalStartEl = document.getElementById('cf-interval-start');
+    if (intervalStartEl && startTime) intervalStartEl.value = startTime;
+  }
+
+  // Pre-fill end boundary
+  const endBoundaryEl = document.getElementById('cf-end-boundary');
+  if (endBoundaryEl && prefill.end_boundary) {
+    endBoundaryEl.value = prefill.end_boundary.slice(0, 16); // datetime-local format
+  }
+
+  // Pre-fill stop-at-duration-end
+  const stopEndEl = document.getElementById('cf-rep-stop-end');
+  if (stopEndEl) stopEndEl.checked = prefill.stop_at_duration_end;
+
+  // Pre-fill days of week (Weekly trigger)
+  setDaysOfWeek(prefill.days_of_week);
+
+  // Pre-fill months of year (Monthly trigger)
+  setMonthsOfYear(prefill.months_of_year);
+
+  // Pre-fill days of month (Monthly trigger)
+  if (prefill.days_of_month_mask) {
+    const daysEl = document.getElementById('cf-days-of-month');
+    if (daysEl) {
+      const days = [];
+      for (let i = 0; i < 31; i++) {
+        if (prefill.days_of_month_mask & (1 << i)) days.push(i + 1);
+      }
+      daysEl.value = days.join(', ');
+    }
+  }
+
+  // Pre-fill conditions and settings checkboxes
+  const condFields = [
+    ['cf-wake-to-run',     prefill.wake_to_run],
+    ['cf-run-on-network',  prefill.run_only_if_network],
+    ['cf-run-on-idle',     prefill.run_only_if_idle],
+    ['cf-no-battery-start',prefill.disallow_on_battery_start],
+    ['cf-stop-on-battery', prefill.stop_on_battery],
+    ['cf-stop-existing',   prefill.stop_if_running],
+    ['cf-delete-expired',  prefill.delete_expired],
+  ];
+  condFields.forEach(([id, val]) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = !!val;
+  });
+
+  // Pre-fill priority select
+  const priorityEl = document.getElementById('cf-priority');
+  if (priorityEl) priorityEl.value = String(prefill.priority);
+}
+
+// Pre-fill a duration <select> and its sibling custom <input>.
+// If the value matches a predefined option it selects it; otherwise selects
+// "custom" and shows the custom input field with the raw ISO duration value.
+function setDurationSelect(selectId, customId, value) {
+  if (!value) return;
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  const options = Array.from(sel.options).map(o => o.value);
+  if (options.includes(value)) {
+    sel.value = value;
+  } else {
+    sel.value = 'custom';
+    const customEl = document.getElementById(customId);
+    if (customEl) {
+      customEl.value = value;
+      customEl.style.display = '';
+    }
+  }
+}
+
+// Pre-fill days-of-week checkboxes from a bitmask (Sun=1,Mon=2,Tue=4,…,Sat=64)
+function setDaysOfWeek(mask) {
+  if (!mask) return;
+  const days = ['sun','mon','tue','wed','thu','fri','sat'];
+  const bits = [1, 2, 4, 8, 16, 32, 64];
+  days.forEach((d, i) => {
+    const el = document.getElementById('cf-dow-' + d);
+    if (el) el.checked = !!(mask & bits[i]);
+  });
+}
+
+// Pre-fill months-of-year checkboxes from a bitmask (Jan=1,Feb=2,…,Dec=2048)
+function setMonthsOfYear(mask) {
+  if (!mask) return;
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  months.forEach((m, i) => {
+    const el = document.getElementById('cf-moy-' + m);
+    if (el) el.checked = !!(mask & (1 << i));
+  });
 }
 
 async function submitCreateTask() {
