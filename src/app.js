@@ -32,6 +32,98 @@ function showToast(msg, type = 'info') {
   toastTimer = setTimeout(() => { el.className = ''; }, 2500);
 }
 
+// ── Input Field History (localStorage-backed autocomplete) ───────────────────
+
+const HISTORY_MAX = 20; // max entries per field key
+
+/**
+ * Load history array for a given key from localStorage.
+ * @param {string} key  e.g. 'wtp_hist_program_path'
+ * @returns {string[]}
+ */
+function histLoad(key) {
+  try { return JSON.parse(localStorage.getItem(key) || '[]'); }
+  catch { return []; }
+}
+
+/**
+ * Save a value into history for a key (most-recent-first, deduplicated, capped).
+ * @param {string} key
+ * @param {string} value  — must be non-empty and non-whitespace
+ */
+function histSave(key, value) {
+  if (!value || !value.trim()) return;
+  const v = value.trim();
+  let arr = histLoad(key).filter(x => x !== v);  // remove duplicates
+  arr.unshift(v);                                 // most recent first
+  if (arr.length > HISTORY_MAX) arr = arr.slice(0, HISTORY_MAX);
+  try { localStorage.setItem(key, JSON.stringify(arr)); } catch {}
+}
+
+/**
+ * Attach a <datalist> to an existing <input> and keep it updated.
+ * Call this AFTER the input is inserted into the DOM.
+ * @param {string} inputId   — id of the <input> element
+ * @param {string} histKey   — localStorage key for this field's history
+ */
+let _activeDatalistIds = [];
+
+function attachHistory(inputId, histKey) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+
+  // Track datalist IDs so we can clean up on modal close
+  const listId = histKey + '_dl';
+  if (!_activeDatalistIds.includes(listId)) _activeDatalistIds.push(listId);
+
+  // Create or reuse a datalist with a stable id
+  let dl = document.getElementById(listId);
+  if (!dl) {
+    dl = document.createElement('datalist');
+    dl.id = listId;
+    document.body.appendChild(dl);
+  }
+
+  // Link the input to the datalist
+  input.setAttribute('list', listId);
+  input.setAttribute('autocomplete', 'off'); // prevent browser native autocomplete
+
+  // Populate datalist from history
+  function refreshDatalist() {
+    dl.innerHTML = histLoad(histKey)
+      .map(v => `<option value="${escHtml(v)}"></option>`)
+      .join('');
+  }
+  refreshDatalist();
+
+  // Re-populate whenever the input gains focus (picks up any new saves since last open)
+  input.addEventListener('focus', refreshDatalist);
+
+  // Save on blur if value is non-empty
+  input.addEventListener('blur', () => {
+    histSave(histKey, input.value);
+    refreshDatalist();
+  });
+}
+
+/**
+ * Save a value and refresh the datalist immediately (call after form submit).
+ * @param {string} inputId
+ * @param {string} histKey
+ * @param {string} value
+ */
+function histSaveAndRefresh(inputId, histKey, value) {
+  histSave(histKey, value);
+  // Refresh the datalist if the input is still in the DOM
+  const listId = histKey + '_dl';
+  const dl = document.getElementById(listId);
+  if (dl) {
+    dl.innerHTML = histLoad(histKey)
+      .map(v => `<option value="${escHtml(v)}"></option>`)
+      .join('');
+  }
+}
+
 // ── Modal helpers ─────────────────────────────────────────────────────────────
 function openModal(title, bodyHtml, footerHtml = '') {
   document.getElementById('modal-title').textContent = title;
@@ -46,6 +138,12 @@ function closeModal() {
   setTimeout(() => {
     document.getElementById('modal-body').innerHTML = '';
     document.getElementById('modal-footer').innerHTML = '';
+    // Clean up orphaned datalists appended to body during this modal session
+    _activeDatalistIds.forEach(id => {
+      const dl = document.getElementById(id);
+      if (dl) dl.remove();
+    });
+    _activeDatalistIds = [];
   }, 200);
 }
 
@@ -242,7 +340,10 @@ function filterTasks() {
     const matchSearch = !search ||
       t.name.toLowerCase().includes(search) ||
       t.path.toLowerCase().includes(search) ||
-      (t.actions && t.actions.some(a => a.toLowerCase().includes(search)));
+      (t.actions && t.actions.some(a => a.toLowerCase().includes(search))) ||
+      (t.description || '').toLowerCase().includes(search) ||
+      (t.author || '').toLowerCase().includes(search) ||
+      (t.run_as_user || '').toLowerCase().includes(search);
     const matchStatus = !status || t.status === status;
     return matchSearch && matchStatus;
   });
@@ -265,7 +366,11 @@ function filterTasks() {
 
 function onSearchInput() {
   if (searchDebounce) clearTimeout(searchDebounce);
-  searchDebounce = setTimeout(filterTasks, 200);
+  searchDebounce = setTimeout(() => {
+    const q = (document.getElementById('search-input')?.value || '').trim();
+    if (q.length > 1) histSave('wtp_hist_search', q);
+    filterTasks();
+  }, 200);
 }
 
 function sortBy(col) {
@@ -280,6 +385,7 @@ function sortBy(col) {
 
 // ── Render table ──────────────────────────────────────────────────────────────
 function escHtml(str) {
+  if (str == null) return '';
   return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -299,8 +405,8 @@ function badgeClass(status) {
 }
 
 function resultClass(result) {
-  if (!result || result === 'Not Run Yet' || result === 'N/A') return 'result-na';
-  if (result === 'Success' || result === '(0x0)') return 'result-ok';
+  if (!result || result === 'Not Run Yet' || result === 'Still Running' || result === 'N/A' || result === '—') return 'result-na';
+  if (result === 'Success (0)') return 'result-ok';
   return 'result-error';
 }
 
@@ -434,14 +540,11 @@ function openDetail(task) {
 
   document.getElementById('detail-panel').classList.remove('panel-hidden');
 
-  // Highlight selected row
+  // Highlight selected row by data-idx (avoids false matches with duplicate task names)
+  const taskIdx = filteredTasks.indexOf(task);
   document.querySelectorAll('#task-tbody tr').forEach(r => r.classList.remove('selected'));
-  const rows = document.querySelectorAll('#task-tbody tr');
-  rows.forEach(r => {
-    if (r.querySelector('.task-name') &&
-        r.querySelector('.task-name').textContent === task.name) {
-      r.classList.add('selected');
-    }
+  document.querySelectorAll('#task-tbody tr[data-idx]').forEach(r => {
+    r.classList.toggle('selected', parseInt(r.dataset.idx, 10) === taskIdx);
   });
 }
 
@@ -1024,23 +1127,50 @@ async function openCreateDialog(prefill = {}) {
       updateCreateTabUI();
     });
   });
+
+  // Attach history/autocomplete to all text inputs in the dialog
+  requestAnimationFrame(() => {
+    attachHistory('cf-name',                'wtp_hist_task_name');
+    attachHistory('cf-run-as-user',         'wtp_hist_run_as_user');
+    attachHistory('cf-program',             'wtp_hist_program_path');
+    attachHistory('cf-args',                'wtp_hist_arguments');
+    attachHistory('cf-workdir',             'wtp_hist_working_dir');
+    attachHistory('cf-script-path',         'wtp_hist_script_path');
+    attachHistory('cf-extra-args',          'wtp_hist_extra_args');
+    // Advanced tab inputs
+    attachHistory('cf-exec-limit-custom',   'wtp_hist_exec_limit');
+    attachHistory('cf-random-delay-custom', 'wtp_hist_rand_delay');
+    attachHistory('cf-rep-interval-custom', 'wtp_hist_rep_interval');
+    attachHistory('cf-rep-duration-custom', 'wtp_hist_rep_duration');
+    attachHistory('cf-boot-delay-custom',   'wtp_hist_boot_delay');
+    attachHistory('cf-end-boundary',        'wtp_hist_end_boundary');
+    attachHistory('cf-days-of-month',       'wtp_hist_days_of_month');
+  });
+}
+
+// Count tabs dynamically so adding/removing tabs doesn't break navigation
+function getTabCount() {
+  return document.querySelectorAll('#create-tabs .modal-tab').length;
 }
 
 // Show the correct tab panel and update Prev/Next/Submit button visibility
 function updateCreateTabUI() {
   document.querySelectorAll('.modal-tab-panel').forEach((p, i) => p.classList.toggle('active', i === _createTabIdx));
   document.querySelectorAll('#create-tabs .modal-tab').forEach((t, i) => t.classList.toggle('active', i === _createTabIdx));
+  const tabCount = getTabCount();
+  const lastIdx  = tabCount - 1;
   const prevBtn   = document.getElementById('tab-prev-btn');
   const nextBtn   = document.getElementById('tab-next-btn');
   const submitBtn = document.getElementById('create-submit-btn');
-  if (prevBtn)   prevBtn.style.display   = _createTabIdx > 0       ? '' : 'none';
-  if (nextBtn)   nextBtn.style.display   = _createTabIdx < 3       ? '' : 'none';
-  if (submitBtn) submitBtn.style.display = _createTabIdx === 3     ? '' : 'none';
+  if (prevBtn)   prevBtn.style.display   = _createTabIdx > 0         ? '' : 'none';
+  if (nextBtn)   nextBtn.style.display   = _createTabIdx < lastIdx   ? '' : 'none';
+  if (submitBtn) submitBtn.style.display = _createTabIdx === lastIdx ? '' : 'none';
 }
 
 // Move to next (+1) or previous (-1) tab
 function createTabNav(delta) {
-  _createTabIdx = Math.max(0, Math.min(3, _createTabIdx + delta));
+  const tabCount = getTabCount();
+  _createTabIdx = Math.max(0, Math.min(tabCount - 1, _createTabIdx + delta));
   updateCreateTabUI();
 }
 
@@ -1119,41 +1249,44 @@ function parseDurationSelect(selectId, customId) {
   return sel.value;
 }
 
+/**
+ * Basic ISO 8601 duration validation.
+ * Accepts strings like PT30M, PT6H, P1D, P1Y2M3DT4H5M6S, etc.
+ * Requires at least one non-zero numeric component after 'P'.
+ * Empty string is considered valid (means "not set").
+ * @param {string} s
+ * @returns {boolean}
+ */
+function isValidIso8601Duration(s) {
+  if (!s) return true; // empty = skip
+  return /^P(?=\d|T\d)(?:\d+Y)?(?:\d+M)?(?:\d+W)?(?:\d+D)?(?:T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+(?:\.\d+)?S)?)?$/.test(s);
+}
+
 // Build days-of-week bitmask: Sun=1, Mon=2, Tue=4, Wed=8, Thu=16, Fri=32, Sat=64
 function daysOfWeekBitmask() {
-  const days = ['sun','mon','tue','wed','thu','fri','sat'];
-  const bits = [1, 2, 4, 8, 16, 32, 64];
-  let mask = 0;
-  days.forEach((d, i) => {
-    const cb = document.getElementById('cf-dow-' + d);
-    if (cb && cb.checked) mask |= bits[i];
-  });
-  return mask;
+  const ids = ['sun','mon','tue','wed','thu','fri','sat'];
+  return ids.reduce((acc, d, i) => {
+    return acc | (document.getElementById('cf-dow-' + d)?.checked ? (1 << i) : 0);
+  }, 0);
 }
 
 // Build months-of-year bitmask: Jan=1, Feb=2, Mar=4, …, Dec=2048
 function monthsOfYearBitmask() {
-  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
-  let mask = 0;
-  months.forEach((m, i) => {
-    const cb = document.getElementById('cf-moy-' + m);
-    if (cb && cb.checked) mask |= (1 << i);
-  });
-  return mask;
+  const ids = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  return ids.reduce((acc, m, i) => {
+    return acc | (document.getElementById('cf-moy-' + m)?.checked ? (1 << i) : 0);
+  }, 0);
 }
 
 // Build days-of-month bitmask from comma-separated day numbers: bit0=day1, bit30=day31
 function daysOfMonthBitmask() {
-  const el = document.getElementById('cf-days-of-month');
-  if (!el) return 0;
-  const val = el.value.trim();
-  if (!val) return 0;
-  let mask = 0;
-  val.split(',').forEach(part => {
-    const day = parseInt(part.trim(), 10);
-    if (day >= 1 && day <= 31) mask |= (1 << (day - 1));
-  });
-  return mask;
+  const raw = document.getElementById('cf-days-of-month')?.value?.trim() || '';
+  if (!raw) return 0;
+  return raw.split(',').reduce((acc, s) => {
+    const d = parseInt(s.trim(), 10);
+    if (d >= 1 && d <= 31) acc |= (1 << (d - 1));
+    return acc;
+  }, 0);
 }
 
 // ── Open edit dialog (pre-fill create dialog and switch to edit mode) ─────────
@@ -1175,7 +1308,7 @@ async function openEditDialog(task) {
     folder:       task.folder,
     description:  task.description || '',
     run_as_user:  task.run_as_user || '',
-    run_level:    0,
+    run_level:    typeof task.run_level === 'number' ? task.run_level : 0,
     hidden:       task.hidden || false,
     enabled:      task.enabled !== false,
     trigger_type: normalizedTrigger,
@@ -1199,8 +1332,8 @@ async function submitCreateTask() {
   const desc      = (document.getElementById('cf-desc')        || {}).value.trim() || '';
   const run_level = parseInt((document.getElementById('cf-run-level') || {}).value || '0', 10);
   const run_as    = (document.getElementById('cf-run-as-user') || {}).value.trim() || '';
-  const hidden    = !!(document.getElementById('cf-hidden')    || {}).checked;
-  const enabled   = (document.getElementById('cf-enabled')     || { checked: true }).checked !== false;
+  const hidden    = !!(document.getElementById('cf-hidden')?.checked);
+  const enabled   = document.getElementById('cf-enabled')?.checked ?? true;
 
   const trigger_type = (document.getElementById('cf-trigger-type') || {}).value || 'Once';
   const action_type  = (document.getElementById('cf-action-type')  || {}).value || 'program';
@@ -1357,29 +1490,49 @@ async function submitCreateTask() {
 
   // ── Submit ─────────────────────────────────────────────────────────────────
   // Read all advanced params
-  const endBoundaryRaw = (document.getElementById('cf-end-boundary') || {}).value || '';
+  const endBoundaryRaw = document.getElementById('cf-end-boundary')?.value || '';
   const endBoundary    = endBoundaryRaw.length === 16 ? endBoundaryRaw + ':00' : endBoundaryRaw;
 
+  const repInt = parseDurationSelect('cf-rep-interval', 'cf-rep-interval-custom');
+  const repDur = parseDurationSelect('cf-rep-duration', 'cf-rep-duration-custom');
+  const execLimit = parseDurationSelect('cf-exec-limit', 'cf-exec-limit-custom');
+  const randDelay = parseDurationSelect('cf-random-delay', 'cf-random-delay-custom');
+  const bootDelay = parseDurationSelect('cf-boot-delay', 'cf-boot-delay-custom');
+
+  // Validate ISO 8601 duration fields before sending to backend
+  if (repInt && !isValidIso8601Duration(repInt)) {
+    showToast('Repetition interval is not a valid ISO 8601 duration (e.g. PT30M, PT6H)', 'error');
+    return;
+  }
+  if (repDur && !isValidIso8601Duration(repDur)) {
+    showToast('Repetition duration is not a valid ISO 8601 duration (e.g. PT1H, P1D)', 'error');
+    return;
+  }
+  if (execLimit && !isValidIso8601Duration(execLimit)) {
+    showToast('Execution time limit is not a valid ISO 8601 duration (e.g. PT1H)', 'error');
+    return;
+  }
+
   const advancedParams = {
-    execution_time_limit:  parseDurationSelect('cf-exec-limit',  'cf-exec-limit-custom'),
-    repetition_interval:   parseDurationSelect('cf-rep-interval','cf-rep-interval-custom'),
-    repetition_duration:   parseDurationSelect('cf-rep-duration','cf-rep-duration-custom'),
-    stop_at_duration_end:  !!(document.getElementById('cf-rep-stop-end')    || {}).checked,
+    execution_time_limit:  execLimit,
+    repetition_interval:   repInt,
+    repetition_duration:   repDur,
+    stop_at_duration_end:  !!(document.getElementById('cf-rep-stop-end')?.checked),
     end_boundary:          endBoundary,
-    delay:                 parseDurationSelect('cf-boot-delay',  'cf-boot-delay-custom'),
-    random_delay:          parseDurationSelect('cf-random-delay','cf-random-delay-custom'),
+    delay:                 bootDelay,
+    random_delay:          randDelay,
     weeks_interval:        parseInt((document.getElementById('cf-weeks-interval') || {}).value || '0', 10) || 0,
     days_of_week:          daysOfWeekBitmask(),
     months_of_year:        monthsOfYearBitmask(),
     days_of_month:         daysOfMonthBitmask(),
-    stop_existing:         !!(document.getElementById('cf-stop-existing')   || {}).checked,
-    delete_expired:        !!(document.getElementById('cf-delete-expired')  || {}).checked,
+    stop_existing:         !!(document.getElementById('cf-stop-existing')?.checked),
+    delete_expired:        !!(document.getElementById('cf-delete-expired')?.checked),
     priority:              parseInt((document.getElementById('cf-priority')  || {}).value || '7', 10),
-    wake_to_run:           !!(document.getElementById('cf-wake-to-run')     || {}).checked,
-    run_only_if_network:   !!(document.getElementById('cf-run-on-network')  || {}).checked,
-    run_only_if_idle:      !!(document.getElementById('cf-run-on-idle')     || {}).checked,
-    disallow_on_batteries: !!(document.getElementById('cf-no-battery-start')|| {}).checked,
-    stop_on_batteries:     !!(document.getElementById('cf-stop-on-battery') || {}).checked,
+    wake_to_run:           !!(document.getElementById('cf-wake-to-run')?.checked),
+    run_only_if_network:   !!(document.getElementById('cf-run-on-network')?.checked),
+    run_only_if_idle:      !!(document.getElementById('cf-run-on-idle')?.checked),
+    disallow_on_batteries: !!(document.getElementById('cf-no-battery-start')?.checked),
+    stop_on_batteries:     !!(document.getElementById('cf-stop-on-battery')?.checked),
   };
 
   const taskParams = {
@@ -1408,6 +1561,14 @@ async function submitCreateTask() {
       await invoke('create_task', { params: taskParams });
       showToast('Task created successfully!', 'success');
     }
+    // Save field values to history on successful submit
+    histSaveAndRefresh('cf-name',        'wtp_hist_task_name',    name);
+    histSaveAndRefresh('cf-run-as-user', 'wtp_hist_run_as_user',  run_as);
+    histSaveAndRefresh('cf-program',     'wtp_hist_program_path', program_path);
+    histSaveAndRefresh('cf-args',        'wtp_hist_arguments',    arguments_str);
+    histSaveAndRefresh('cf-workdir',     'wtp_hist_working_dir',  working_dir);
+    const curScriptPath = document.getElementById('cf-script-path')?.value || '';
+    histSaveAndRefresh('cf-script-path', 'wtp_hist_script_path',  curScriptPath);
     _editTaskPath = null;
     closeModal();
     refreshAll();
@@ -1461,6 +1622,7 @@ async function importXml() {
     <button class="btn" onclick="closeModal()">Cancel</button>`;
 
   openModal('📥 Import Task XML', bodyHtml, footerHtml);
+  requestAnimationFrame(() => attachHistory('ix-name', 'wtp_hist_task_name'));
 }
 
 function validateImportXml() {
@@ -1828,6 +1990,14 @@ async function init() {
       closeModal();
       hideCtxMenu();
     }
+  });
+
+  // Attach history autocomplete to the search input
+  requestAnimationFrame(() => attachHistory('search-input', 'wtp_hist_search'));
+
+  // Clean up intervals on page unload to prevent memory leaks
+  window.addEventListener('beforeunload', () => {
+    if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   });
 
   await refreshFolders();
