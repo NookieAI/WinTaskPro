@@ -288,6 +288,45 @@ fn write_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
 
+// ── Auto-update commands ──────────────────────────────────────────────────────
+// TODO: Run `npx @tauri-apps/cli signer generate -w ~/.tauri/wintaskpro.key` and
+//       place the public key in tauri.conf.json plugins.updater.pubkey before shipping.
+//       See UPDATER.md for full instructions. Without a pubkey, update signatures are
+//       not verified — set the pubkey before releasing to production.
+
+#[tauri::command]
+async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    match app.updater() {
+        Ok(updater) => {
+            match updater.check().await {
+                Ok(Some(update)) => {
+                    Ok(serde_json::json!({
+                        "available": true,
+                        "version": update.version,
+                        "current_version": update.current_version,
+                        "body": update.body.unwrap_or_default(),
+                    }))
+                }
+                Ok(None) => Ok(serde_json::json!({ "available": false })),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater.check().await.map_err(|e| e.to_string())?;
+    if let Some(update) = update {
+        update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn is_admin() -> bool {
     #[cfg(windows)]
@@ -330,6 +369,7 @@ fn main() {
     let engine: Option<SchedulerEngine> = None;
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState(Mutex::new(engine)))
         .setup(|app| {
             // ── System tray ───────────────────────────────────────────────────
@@ -399,6 +439,8 @@ fn main() {
             read_file,
             write_file,
             is_admin,
+            check_for_update,
+            install_update,
         ])
         .run(tauri::generate_context!())
         .expect("Error running WinTaskPro");

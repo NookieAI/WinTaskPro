@@ -2318,9 +2318,46 @@ async function init() {
 
   await refreshFolders();
   showPage('dashboard');
+
+  // Check for updates silently after startup
+  setTimeout(async () => {
+    try {
+      const result = await invoke('check_for_update');
+      if (result.available) {
+        showUpdateBanner(result.version, result.body);
+      }
+    } catch (_) {
+      // updater not configured yet — silently ignore
+    }
+  }, 3000);
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// ── Auto-update banner ────────────────────────────────────────────────────────
+function showUpdateBanner(version, notes) {
+  const existing = document.getElementById('update-banner');
+  if (existing) existing.remove();
+  const banner = document.createElement('div');
+  banner.id = 'update-banner';
+  banner.innerHTML = `
+    <span>🚀 WinTaskPro <strong>v${escHtml(version)}</strong> is available!</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn btn-primary btn-sm" id="update-install-btn">Install &amp; Restart</button>
+      <button class="icon-btn" id="update-dismiss-btn" title="Dismiss">✕</button>
+    </div>`;
+  document.body.appendChild(banner);
+
+  document.getElementById('update-install-btn').onclick = async () => {
+    banner.innerHTML = '<span>⏳ Downloading update…</span>';
+    try {
+      await invoke('install_update');
+    } catch (err) {
+      banner.innerHTML = `<span style="color:var(--red)">Update failed: ${escHtml(String(err))}</span> <button class="icon-btn" onclick="this.closest('#update-banner').remove()">✕</button>`;
+    }
+  };
+  document.getElementById('update-dismiss-btn').onclick = () => banner.remove();
+}
 
 // ── Health scoring ────────────────────────────────────────────────────────────
 function healthScore(task) {
