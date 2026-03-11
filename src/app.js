@@ -15,6 +15,9 @@ let _editTaskPath  = null;  // non-null when editing an existing task
 // Live Monitor
 let liveRefreshInterval = null;
 
+// Dashboard auto-refresh timer
+let _dashboardRefreshTimer = null;
+
 // Audit log (max MAX_AUDIT_LOG_ENTRIES entries, stored in localStorage)
 const MAX_AUDIT_LOG_ENTRIES = 500;
 let _auditLog = [];
@@ -80,6 +83,10 @@ function closeModal() {
 
 // ── Page navigation ───────────────────────────────────────────────────────────
 function showPage(page) {
+  if (currentPage === 'dashboard' && page !== 'dashboard') {
+    clearTimeout(_dashboardRefreshTimer);
+    _dashboardRefreshTimer = null;
+  }
   currentPage = page;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -3037,6 +3044,8 @@ function closeHelpModal() {
 
 // ── Enhanced dashboard ────────────────────────────────────────────────────────
 loadDashboard = async function() {
+  clearTimeout(_dashboardRefreshTimer);
+  _dashboardRefreshTimer = null;
   const content = document.getElementById('dash-content');
   content.innerHTML = '<div class="loading-msg"><span class="spinner"></span> Loading...</div>';
   setStatus('Loading dashboard...');
@@ -3065,7 +3074,7 @@ loadDashboard = async function() {
         <div class="stat-card running"><div class="stat-icon">▶</div><div class="stat-val">${running}</div><div class="stat-lbl">Running</div></div>
         <div class="stat-card ready"><div class="stat-icon">✅</div><div class="stat-val">${ready}</div><div class="stat-lbl">Ready</div></div>
         <div class="stat-card disabled"><div class="stat-icon">⏸</div><div class="stat-val">${disabled}</div><div class="stat-lbl">Disabled</div></div>
-        <div class="stat-card"><div class="stat-icon">⚠</div><div class="stat-val" style="color:var(--red)">${failed}</div><div class="stat-lbl">Failed</div></div>
+        <div class="stat-card failed-card" onclick="goToFailedTasks()" style="cursor:pointer"><div class="stat-icon">❌</div><div class="stat-val">${failed}</div><div class="stat-lbl">Failed</div></div>
       </div>
       <div style="margin:10px 0 4px;font-size:11px;color:var(--text3)">System Health: ${healthPct}% Ready</div>
       <div class="health-bar-wrap"><div class="health-bar" style="width:${healthPct}%"></div></div>
@@ -3108,6 +3117,9 @@ loadDashboard = async function() {
         </div>
       </div>`;
     setStatus('Loaded ' + total + ' total tasks');
+    _dashboardRefreshTimer = setTimeout(() => {
+      if (currentPage === 'dashboard') loadDashboard();
+    }, 30000);
   } catch (err) {
     const c = document.getElementById('dash-content');
     if (c) c.innerHTML = `<div style="color:var(--red);padding:16px">Failed to load dashboard: ${escHtml(String(err))}</div>`;
@@ -3115,3 +3127,9 @@ loadDashboard = async function() {
     showToast('Dashboard error: ' + err, 'error');
   }
 };
+
+function goToFailedTasks() {
+  showPage('tasks');
+  const sel = document.getElementById('status-filter');
+  if (sel) { sel.value = 'Failed'; filterTasks(); }
+}
