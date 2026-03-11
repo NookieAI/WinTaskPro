@@ -706,11 +706,11 @@ async function openCreateDialog(prefill = {}) {
   const prefillAction = actionNormMap[(prefill.action_type || '').toLowerCase()] || 'program';
 
   // Build folder options — root is always available
-  let folderOptions = '<option value="\\">&#92; (Root)</option>';
+  let folderOptions = `<option value="\\" ${!(prefill.folder) || prefill.folder === '\\' ? 'selected' : ''}>&#92; (Root)</option>`;
   try {
     const folders = await invoke('get_folders');
     folderOptions += folders.map(f =>
-      `<option value="${escHtml(f)}" ${prefill.folder === f ? 'selected' : ''}>${escHtml(f)}</option>`
+      `<option value="${escHtml(f)}" ${(prefill.folder || '').toLowerCase() === f.toLowerCase() ? 'selected' : ''}>${escHtml(f)}</option>`
     ).join('');
   } catch (_) {}
 
@@ -1347,9 +1347,19 @@ async function openEditDialog(task) {
   const tIdx      = startFull.indexOf('T');
   const startTime = tIdx >= 0 ? startFull.slice(tIdx + 1, tIdx + 6) : '';
 
+  // Derive folder from the task's full path (e.g. "\MyFolder\TaskName" → "\MyFolder")
+  // task.folder may already be set, but fall back to parsing task.path for reliability.
+  const taskFolder = (() => {
+    if (task.folder && task.folder !== '\\') return task.folder;
+    const path = task.path || '';
+    const lastSlash = path.lastIndexOf('\\');
+    if (lastSlash <= 0) return '\\';
+    return path.substring(0, lastSlash) || '\\';
+  })();
+
   const prefill = {
     name:         task.name,
-    folder:       task.folder,
+    folder:       taskFolder,
     description:  task.description || '',
     run_as_user:  task.run_as_user || '',
     run_level:    task.run_level || 0,
