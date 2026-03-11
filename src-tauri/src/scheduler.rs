@@ -654,7 +654,7 @@ impl SchedulerEngine {
         {
             return Err(windows::core::Error::new(
                 windows::core::HRESULT(0x80070057u32 as i32),
-                "Task name contains invalid characters (cannot use \\ / : * ? \" < > |)".into(),
+                "Task name contains invalid characters (cannot use \\ / : * ? \" < > |)",
             ));
         }
 
