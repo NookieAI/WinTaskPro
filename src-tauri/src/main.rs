@@ -226,7 +226,7 @@ fn get_running_tasks(state: State<AppState>) -> Result<Vec<RunningTaskInfo>, Str
 
 #[tauri::command]
 #[cfg(not(windows))]
-fn get_running_tasks(_state: State<AppState>) -> Result<Vec<RunningTaskInfo>, String> {
+fn get_running_tasks(_state: State<AppState>) -> Result<Vec<String>, String> {
     Err("Windows only".into())
 }
 
@@ -242,7 +242,7 @@ fn get_task_history(path: String, max_records: u32, state: State<AppState>) -> R
 
 #[tauri::command]
 #[cfg(not(windows))]
-fn get_task_history(_path: String, _max_records: u32, _state: State<AppState>) -> Result<Vec<TaskRunRecord>, String> {
+fn get_task_history(_path: String, _max_records: u32, _state: State<AppState>) -> Result<Vec<String>, String> {
     Err("Windows only".into())
 }
 
