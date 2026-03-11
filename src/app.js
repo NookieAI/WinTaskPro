@@ -1170,7 +1170,7 @@ async function openCreateDialog(prefill = {}) {
   document.querySelectorAll('#create-tabs .modal-tab').forEach(tab => {
     tab.addEventListener('click', () => {
       _createTabIdx = parseInt(tab.dataset.tab, 10);
-      if (_createTabIdx === 4) generateXmlPreview(); // auto-refresh XML tab
+      if (_createTabIdx === TAB_XML) generateXmlPreview(); // auto-refresh XML tab
       updateCreateTabUI();
     });
   });
@@ -2055,9 +2055,12 @@ function onAutoRefreshChange() {
     autoRefreshTimer = setInterval(refreshAll, settings.refreshInterval * 1000);
   }
 
-  // Update live indicator
+  updateLiveIndicator(settings.autoRefresh);
+}
+
+function updateLiveIndicator(visible) {
   const ind = document.getElementById('live-refresh-indicator');
-  if (ind) ind.style.display = settings.autoRefresh ? '' : 'none';
+  if (ind) ind.style.display = visible ? '' : 'none';
 }
 
 function onRefreshIntervalChange() {
@@ -2076,8 +2079,7 @@ async function init() {
     settings.autoRefresh = true;
     settings.refreshInterval = parseInt(localStorage.getItem('refreshInterval') || '30', 10) || 30;
     autoRefreshTimer = setInterval(refreshAll, settings.refreshInterval * 1000);
-    const ind = document.getElementById('live-refresh-indicator');
-    if (ind) ind.style.display = '';
+    updateLiveIndicator(true);
   }
   if (localStorage.getItem('showSystemTasks') === 'false') {
     settings.showSystemTasks = false;
