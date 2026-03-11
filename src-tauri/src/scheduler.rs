@@ -60,6 +60,8 @@ fn fmt_code(code: i32) -> String {
     }
 }
 
+// OLE dates from ITaskService are in LOCAL time; no UTC conversion needed.
+// The algorithm (d - 25569.0) * 86400.0 converts OLE date to Unix timestamp seconds.
 fn ole_date(d: f64) -> String {
     if d < 1.0 { return "Never".into(); }
     let secs = ((d - 25569.0) * 86400.0).round() as i64;
@@ -108,7 +110,8 @@ pub struct TaskInfo {
 
 fn default_priority() -> u32 { 7 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct CreateTaskParams {
     pub name:           String,
     pub folder_path:    String,
@@ -210,6 +213,7 @@ impl SchedulerEngine {
     fn collect_folders(&self, folder: &ITaskFolder, path: &str, out: &mut Vec<String>) -> Result<()> {
         let subs  = unsafe { folder.GetFolders(0)? };
         let count = unsafe { subs.Count()? };
+        if count < 1 { return Ok(()); }  // defensive: Count() could return 0 or negative on error
         for i in 1..=count {
             let v   = vi(i);
             let sub = match unsafe { subs.get_Item(&v) } {
@@ -229,6 +233,7 @@ impl SchedulerEngine {
         let folder = unsafe { self.service.GetFolder(&BSTR::from(folder_path))? };
         let tasks  = unsafe { folder.GetTasks(0)? };
         let count  = unsafe { tasks.Count()? };
+        if count < 1 { return Ok(vec![]); }  // defensive: Count() could return 0 or negative on error
         let mut out = Vec::new();
         for i in 1..=count {
             let v    = vi(i);
@@ -421,6 +426,8 @@ impl SchedulerEngine {
             "Idle"          => TASK_TRIGGER_IDLE,
             "SessionLock"   => TASK_TRIGGER_SESSION_STATE_CHANGE,
             "SessionUnlock" => TASK_TRIGGER_SESSION_STATE_CHANGE,
+            // "Interval" is handled via IRepetitionPattern on a Daily trigger
+            "Interval"      => TASK_TRIGGER_DAILY,
             _               => TASK_TRIGGER_DAILY,
         };
         let trigger = unsafe { trig_col.Create(ttype)? };
@@ -442,13 +449,12 @@ impl SchedulerEngine {
         // Repetition pattern (applies to all trigger types when interval is set)
         if !p.repetition_interval.is_empty() {
             unsafe {
-                if let Ok(rep) = trigger.Repetition() {
-                    let _ = rep.SetInterval(&BSTR::from(p.repetition_interval.as_str()));
-                    if !p.repetition_duration.is_empty() {
-                        let _ = rep.SetDuration(&BSTR::from(p.repetition_duration.as_str()));
-                    }
-                    let _ = rep.SetStopAtDurationEnd(vb(p.stop_at_duration_end));
+                let rep = trigger.Repetition()?;
+                rep.SetInterval(&BSTR::from(p.repetition_interval.as_str()))?;
+                if !p.repetition_duration.is_empty() {
+                    rep.SetDuration(&BSTR::from(p.repetition_duration.as_str()))?;
                 }
+                rep.SetStopAtDurationEnd(vb(p.stop_at_duration_end))?;
             }
         }
 

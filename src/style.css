@@ -756,3 +756,12 @@ select.form-control   { cursor: pointer; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text3); }
+/* ── Input history / datalist autocomplete ────────────────────────────────── */
+datalist option {
+  background: var(--bg3);
+  color: var(--text);
+  font-size: 13px;
+}
+input[list]::-webkit-calendar-picker-indicator {
+  display: none !important; /* Remove default calendar icon on datetime inputs linked to a datalist */
+}
