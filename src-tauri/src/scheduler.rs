@@ -557,12 +557,32 @@ impl SchedulerEngine {
         let action  = unsafe { act_col.Create(TASK_ACTION_EXEC)? };
         let exec: IExecAction = action.cast()?;
 
-        // If env_vars are set, wrap the command in cmd.exe with SET statements
+        // If env_vars are set, wrap the command in cmd.exe with SET statements.
+        // Each KEY=VALUE pair is escaped so that cmd.exe special characters in
+        // the value portion (& | < > ^ ( ) ") cannot break out of the SET command.
         if !p.env_vars.is_empty() {
+            fn escape_cmd_value(s: &str) -> String {
+                s.chars().map(|c| match c {
+                    '&' | '|' | '<' | '>' | '^' | '(' | ')' | '"' => format!("^{c}"),
+                    _ => c.to_string(),
+                }).collect()
+            }
+
             let env_sets: String = p.env_vars.lines()
-                .filter(|l| l.contains('='))
-                .map(|l| format!("SET {} && ", l.trim()))
+                .filter_map(|l| {
+                    let l = l.trim();
+                    // Only accept lines of the form KEY=VALUE where KEY is alphanumeric/underscore
+                    let eq = l.find('=')?;
+                    let key = &l[..eq];
+                    let val = &l[eq + 1..];
+                    if key.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        Some(format!("SET {}={} && ", key, escape_cmd_value(val)))
+                    } else {
+                        None // skip keys with invalid characters
+                    }
+                })
                 .collect();
+
             let wrapped_args = format!("/c \"{}{}{}\"",
                 env_sets,
                 p.program_path,
