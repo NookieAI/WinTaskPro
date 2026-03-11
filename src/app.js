@@ -12,6 +12,25 @@ let selectedTask   = null;
 let _createTabIdx  = 0;     // tracks which tab is active in the Create Task modal
 let _editTaskPath  = null;  // non-null when editing an existing task
 
+// Live Monitor
+let liveRefreshInterval = null;
+
+// Audit log (max 500 entries, stored in localStorage)
+let _auditLog = [];
+
+// Task failure detection for notifications
+let _prevTaskResults = {};
+
+// Bulk operations
+let _selectedPaths = new Set();
+
+// Column visibility preferences
+let _colPrefs = {
+  cb: true, name: true, health: true, status: true,
+  triggers: true, action: true, last_run: true,
+  next_run: true, last_result: true, controls: true,
+};
+
 // Debounce timer for search input
 let searchDebounce = null;
 
@@ -64,9 +83,17 @@ function showPage(page) {
   const topbar = document.getElementById('topbar');
   if (topbar) topbar.style.display = page === 'tasks' ? 'flex' : 'none';
 
+  // Stop live monitor interval when leaving live page
+  if (page !== 'live' && liveRefreshInterval) {
+    clearInterval(liveRefreshInterval);
+    liveRefreshInterval = null;
+  }
+
   if (page === 'dashboard') loadDashboard();
   if (page === 'tasks')     loadTasksForFolder(selectedFolder);
+  if (page === 'live')      startLiveMonitor();
   if (page === 'templates') renderTemplates();
+  if (page === 'auditlog')  renderAuditLog();
   if (page === 'settings')  renderSettings();
 }
 
@@ -322,19 +349,24 @@ function renderTable() {
     const actionText = firstAction ? firstAction.substring(0, 50) + (firstAction.length > 50 ? '…' : '') : '—';
     const triggers   = (task.triggers && task.triggers.length > 0)
       ? task.triggers.join(', ').substring(0, 40) : '—';
+    const health  = healthScore(task);
+    const healthDot = `<span class="health-dot ${health}" title="Health: ${health}"></span>`;
+    const isChecked = _selectedPaths.has(task.path);
 
-    return `<tr data-idx="${idx}">
-      <td>
+    return `<tr data-idx="${idx}" class="${isChecked ? 'row-selected' : ''}">
+      <td data-col="cb"><input type="checkbox" class="task-cb" data-path="${escHtml(task.path)}" ${isChecked ? 'checked' : ''} /></td>
+      <td data-col="name">
         <span class="task-name">${escHtml(task.name)}</span>
         ${task.hidden ? '<span class="badge badge-unknown" title="Hidden">H</span>' : ''}
       </td>
-      <td><span class="badge badge-${badgeClass(task.status)}">${escHtml(task.status || '—')}</span></td>
-      <td class="cell-trunc" title="${escHtml(triggers)}">${escHtml(triggers)}</td>
-      <td class="cell-trunc" title="${escHtml(firstAction || '')}">${escHtml(actionText)}</td>
-      <td>${escHtml(task.last_run || '—')}</td>
-      <td>${escHtml(task.next_run || '—')}</td>
-      <td class="${resultClass(task.last_result)}">${escHtml(task.last_result || '—')}</td>
-      <td class="controls-cell">
+      <td data-col="health">${healthDot}</td>
+      <td data-col="status"><span class="badge badge-${badgeClass(task.status)}">${escHtml(task.status || '—')}</span></td>
+      <td data-col="triggers" class="cell-trunc" title="${escHtml(triggers)}">${escHtml(triggers)}</td>
+      <td data-col="action" class="cell-trunc" title="${escHtml(firstAction || '')}">${escHtml(actionText)}</td>
+      <td data-col="last_run">${escHtml(task.last_run || '—')}</td>
+      <td data-col="next_run">${escHtml(task.next_run || '—')}</td>
+      <td data-col="last_result" class="${resultClass(task.last_result)}">${escHtml(task.last_result || '—')}</td>
+      <td data-col="controls" class="controls-cell">
         <button class="icon-btn" title="Run"    data-action="run"    data-idx="${idx}">▶</button>
         <button class="icon-btn" title="Stop"   data-action="stop"   data-idx="${idx}">⏹</button>
         <button class="icon-btn danger" title="Delete" data-action="delete" data-idx="${idx}">🗑</button>
@@ -342,8 +374,21 @@ function renderTable() {
     </tr>`;
   }).join('');
 
+  // Apply column visibility
+  applyColumnVisibility();
+
   // Event delegation for row clicks and control buttons
   tbody.onclick = e => {
+    // Handle checkbox
+    const cb = e.target.closest('.task-cb');
+    if (cb) {
+      e.stopPropagation();
+      const path = cb.dataset.path;
+      if (cb.checked) { _selectedPaths.add(path); } else { _selectedPaths.delete(path); }
+      cb.closest('tr').classList.toggle('row-selected', cb.checked);
+      updateBulkToolbar();
+      return;
+    }
     const btn = e.target.closest('[data-action]');
     if (btn) {
       e.stopPropagation();
@@ -371,10 +416,13 @@ function openDetail(task) {
 
   // Build detail body
   const sections = [];
+  const health = healthScore(task);
 
   sections.push(`
     <div class="detail-section">
-      <div class="detail-section-title">General</div>
+      <div class="detail-section-title">General
+        <span class="health-dot ${health}" title="Health: ${health}" style="float:right;margin-top:2px"></span>
+      </div>
       <table class="detail-table">
         <tr><td>Path</td><td>${escHtml(task.path)}</td></tr>
         <tr><td>Status</td><td><span class="badge badge-${badgeClass(task.status)}">${escHtml(task.status)}</span></td></tr>
@@ -412,6 +460,10 @@ function openDetail(task) {
         <tr><td>Next Run</td><td>${escHtml(task.next_run || '—')}</td></tr>
         <tr><td>Last Result</td><td class="${resultClass(task.last_result)}">${escHtml(task.last_result || '—')}</td></tr>
       </table>
+      <div style="margin-top:8px">
+        <button class="btn" onclick="loadTaskHistory('${escHtml(task.path)}')">📋 Load Full History</button>
+      </div>
+      <div id="task-history-container" style="margin-top:8px"></div>
     </div>`);
 
   document.getElementById('detail-body').innerHTML = sections.join('');
@@ -422,14 +474,16 @@ function openDetail(task) {
   const toggleBtn = document.getElementById('d-toggle-btn');
   const xmlBtn    = document.getElementById('d-xml-btn');
   const editBtn   = document.getElementById('d-edit-btn');
+  const cloneBtn  = document.getElementById('d-clone-btn');
   const deleteBtn = document.getElementById('d-delete-btn');
 
-  runBtn.onclick    = () => runTask(task.path);
-  stopBtn.onclick   = () => stopTask(task.path);
+  runBtn.onclick    = () => { appendAuditLog('run_task', task.name, task.path); runTask(task.path); };
+  stopBtn.onclick   = () => { appendAuditLog('stop_task', task.name, task.path); stopTask(task.path); };
   toggleBtn.onclick = () => toggleTask(task);
   toggleBtn.textContent = task.enabled ? '⏸ Disable' : '▶ Enable';
   xmlBtn.onclick    = () => exportXml(task.path);
-  if (editBtn) editBtn.onclick = () => openEditDialog(task);
+  if (editBtn)   editBtn.onclick  = () => openEditDialog(task);
+  if (cloneBtn)  cloneBtn.onclick = () => cloneTask(task);
   deleteBtn.onclick = () => deleteTask(task.path, task.name);
 
   document.getElementById('detail-panel').classList.remove('panel-hidden');
@@ -477,6 +531,7 @@ async function toggleTask(task) {
   try {
     const newEnabled = !task.enabled;
     await invoke('set_task_enabled', { path: task.path, enabled: newEnabled });
+    appendAuditLog(newEnabled ? 'enable_task' : 'disable_task', task.name, task.path);
     showToast(`Task ${newEnabled ? 'enabled' : 'disabled'}`, 'success');
     setTimeout(refreshAll, 500);
   } catch (err) {
@@ -500,6 +555,7 @@ async function deleteTask(path, name) {
       closeModal();
       try {
         await invoke('delete_task', { path });
+        appendAuditLog('delete_task', name, path);
         showToast('Task deleted', 'success');
         closeDetail();
         refreshAll();
@@ -578,6 +634,27 @@ async function exportXml(path) {
 async function refreshAll() {
   await refreshFolders();
   await loadTasksForFolder(selectedFolder);
+
+  // Check for task failures and notify if enabled
+  const notifyEnabled = localStorage.getItem('wtp_notifyOnFailure') === 'true';
+  if (notifyEnabled && allTasks.length > 0) {
+    allTasks.forEach(task => {
+      const prev = _prevTaskResults[task.path];
+      const code = task.last_result_code;
+      // Non-zero, non-running (267009), non-never-run (267011) = failure
+      if (prev !== undefined && prev !== code && code !== 0 && code !== 267009 && code !== 267011) {
+        if (Notification.permission === 'granted') {
+          new Notification('WinTaskPro — Task Failed', {
+            body: task.name + ' failed with ' + task.last_result,
+            icon: 'icon.png',
+          });
+        }
+      }
+    });
+    // Update previous results map
+    allTasks.forEach(t => { _prevTaskResults[t.path] = t.last_result_code; });
+  }
+
   showToast('Refreshed', 'success');
 }
 
@@ -588,6 +665,7 @@ async function openCreateDialog(prefill = {}) {
   // Normalize trigger type to match Rust enum casing
   const triggerNorm = {
     'once':'Once','daily':'Daily','weekly':'Weekly','monthly':'Monthly',
+    'interval':'Interval',
     'boot':'Boot','logon':'Logon','idle':'Idle',
     'sessionlock':'SessionLock','sessionunlock':'SessionUnlock',
   };
@@ -617,6 +695,7 @@ async function openCreateDialog(prefill = {}) {
       <div class="modal-tab" data-tab="1">Trigger</div>
       <div class="modal-tab" data-tab="2">Action</div>
       <div class="modal-tab" data-tab="3">Advanced</div>
+      <div class="modal-tab" data-tab="4">XML</div>
     </div>
 
     <!-- ── Tab 0: General ── -->
@@ -668,6 +747,7 @@ async function openCreateDialog(prefill = {}) {
           <option value="Daily"         ${prefillTrigger==='Daily'         ?'selected':''}>Daily — Run every N days</option>
           <option value="Weekly"        ${prefillTrigger==='Weekly'        ?'selected':''}>Weekly — Run every N weeks</option>
           <option value="Monthly"       ${prefillTrigger==='Monthly'       ?'selected':''}>Monthly — Run on a specific day of the month</option>
+          <option value="Interval"      ${prefillTrigger==='Interval'      ?'selected':''}>Interval — Repeat every N hours/minutes</option>
           <option value="Boot"          ${prefillTrigger==='Boot'          ?'selected':''}>Boot — Run at Windows startup</option>
           <option value="Logon"         ${prefillTrigger==='Logon'         ?'selected':''}>Logon — Run when a user logs on</option>
           <option value="Idle"          ${prefillTrigger==='Idle'          ?'selected':''}>Idle — Run when the system is idle</option>
@@ -755,6 +835,32 @@ async function openCreateDialog(prefill = {}) {
       <div id="tf-sessionunlock" style="display:none">
         <div class="info-box info">This task will run when the Windows session is unlocked (entering PIN or password).</div>
       </div>
+
+      <!-- Interval -->
+      <div id="tf-interval" style="display:none">
+        <div class="form-group">
+          <label>Repeat every</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" id="cf-interval-value" class="form-control" min="1" value="${prefill.interval_value || 1}" style="width:80px" />
+            <select id="cf-interval-unit" class="form-control" style="width:120px">
+              <option value="Hours"   ${(prefill.interval_unit||'Hours')==='Hours'   ?'selected':''}>Hours</option>
+              <option value="Minutes" ${(prefill.interval_unit||'')==='Minutes' ?'selected':''}>Minutes</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Start time <span style="font-weight:400;color:var(--text3)">(optional)</span></label>
+          <input type="time" id="cf-interval-start" class="form-control" value="${prefill.interval_start || '00:00'}" style="width:140px" />
+        </div>
+        <div class="info-box info">Task will run indefinitely, repeating every N hours/minutes starting at the chosen time.</div>
+        <div style="margin-top:10px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:6px">Quick pick:</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${[['15m','15','Minutes'],['30m','30','Minutes'],['1h','1','Hours'],['2h','2','Hours'],['4h','4','Hours'],['6h','6','Hours'],['8h','8','Hours'],['12h','12','Hours']]
+              .map(([label,v,u])=>`<button class="btn" type="button" onclick="setIntervalQuick(${v},'${u}')">Every ${label}</button>`).join('')}
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ── Tab 2: Action ── -->
@@ -783,6 +889,9 @@ async function openCreateDialog(prefill = {}) {
           <label>Additional Arguments <span style="font-weight:400;text-transform:none;color:var(--text3)">(optional)</span></label>
           <input type="text" id="cf-extra-args" class="form-control" placeholder="" />
         </div>
+        <div class="form-group">
+          <button class="btn" type="button" onclick="openScriptEditor()">✏️ Edit Script Inline</button>
+        </div>
       </div>
 
       <!-- Program / Custom path row -->
@@ -803,6 +912,20 @@ async function openCreateDialog(prefill = {}) {
         <label>Working Directory <span style="font-weight:400;text-transform:none;color:var(--text3)">(optional)</span></label>
         <input type="text" id="cf-workdir" class="form-control" value="${escHtml(prefill.working_dir || '')}" placeholder="C:\\Scripts" />
       </div>
+
+      <!-- Environment variables section -->
+      <details class="form-group">
+        <summary style="font-size:12px;font-weight:600;cursor:pointer;color:var(--text2);padding:4px 0">
+          🌐 Environment Variables <span style="font-weight:400;color:var(--text3)">(optional)</span>
+        </summary>
+        <div style="margin-top:8px">
+          <div id="env-vars-list"></div>
+          <button class="btn" type="button" onclick="addEnvVar()" style="margin-top:6px">+ Add Variable</button>
+          <div class="form-hint">Each variable will be injected before running the script (via cmd.exe SET)</div>
+          <textarea id="cf-env-vars" class="form-control" rows="3" style="display:none;font-family:monospace;font-size:11px;margin-top:6px"
+                    placeholder="KEY=VALUE&#10;ANOTHER_KEY=ANOTHER_VALUE"></textarea>
+        </div>
+      </details>
     </div>
 
     <!-- ── Tab 3: Advanced ── -->
@@ -1001,6 +1124,22 @@ async function openCreateDialog(prefill = {}) {
           <label for="cf-delete-expired">Delete task if not scheduled to run again</label>
         </div>
       </div>
+    </div>
+
+    <!-- ── Tab 4: XML ── -->
+    <div class="modal-tab-panel" id="tab-panel-4">
+      <div class="info-box" style="margin-bottom:10px">
+        ⚠️ Editing XML directly overrides all form settings. Use "↺ Apply XML" to back-fill the form from the XML (best-effort).
+      </div>
+      <div class="form-group">
+        <label>Task XML
+          <button class="btn" type="button" onclick="generateXmlPreview()" style="margin-left:8px;font-size:11px">🔄 Refresh from Form</button>
+          <button class="btn" type="button" onclick="applyXmlToForm()" style="margin-left:4px;font-size:11px">↺ Apply XML</button>
+        </label>
+        <textarea id="cf-task-xml" class="form-control" rows="20"
+                  style="font-family:monospace;font-size:11px"
+                  placeholder="XML will be generated when you click 'Refresh from Form'…"></textarea>
+      </div>
     </div>`;
 
   const footerHtml = `
@@ -1021,6 +1160,7 @@ async function openCreateDialog(prefill = {}) {
   document.querySelectorAll('#create-tabs .modal-tab').forEach(tab => {
     tab.addEventListener('click', () => {
       _createTabIdx = parseInt(tab.dataset.tab, 10);
+      if (_createTabIdx === 4) generateXmlPreview(); // auto-refresh XML tab
       updateCreateTabUI();
     });
   });
@@ -1034,13 +1174,14 @@ function updateCreateTabUI() {
   const nextBtn   = document.getElementById('tab-next-btn');
   const submitBtn = document.getElementById('create-submit-btn');
   if (prevBtn)   prevBtn.style.display   = _createTabIdx > 0       ? '' : 'none';
-  if (nextBtn)   nextBtn.style.display   = _createTabIdx < 3       ? '' : 'none';
-  if (submitBtn) submitBtn.style.display = _createTabIdx === 3     ? '' : 'none';
+  if (nextBtn)   nextBtn.style.display   = _createTabIdx < 4       ? '' : 'none';
+  if (submitBtn) submitBtn.style.display = (_createTabIdx === 3 || _createTabIdx === 4) ? '' : 'none';
 }
 
 // Move to next (+1) or previous (-1) tab
 function createTabNav(delta) {
-  _createTabIdx = Math.max(0, Math.min(3, _createTabIdx + delta));
+  _createTabIdx = Math.max(0, Math.min(4, _createTabIdx + delta));
+  if (_createTabIdx === 4) generateXmlPreview();
   updateCreateTabUI();
 }
 
@@ -1049,7 +1190,7 @@ function updateTriggerFields() {
   const typeEl = document.getElementById('cf-trigger-type');
   if (!typeEl) return;
   const val = typeEl.value.toLowerCase();
-  ['once','daily','weekly','monthly','boot','logon','idle','sessionlock','sessionunlock'].forEach(g => {
+  ['once','daily','weekly','monthly','interval','boot','logon','idle','sessionlock','sessionunlock'].forEach(g => {
     const el = document.getElementById('tf-' + g);
     if (el) el.style.display = 'none';
   });
@@ -1278,6 +1419,13 @@ async function submitCreateTask() {
       markErr('cf-idle-min', mins < 1);
       break;
     }
+    case 'Interval': {
+      // Interval maps to Daily trigger with repetition_interval
+      const startTime = (document.getElementById('cf-interval-start') || {}).value || '00:00';
+      start_datetime = `${today}T${fmtTime(startTime)}`;
+      days_interval  = 1; // Always 1 day interval for the outer trigger
+      break;
+    }
     default: break; // Boot, Logon, SessionLock, SessionUnlock — no extra params needed
   }
 
@@ -1360,11 +1508,23 @@ async function submitCreateTask() {
   const endBoundaryRaw = (document.getElementById('cf-end-boundary') || {}).value || '';
   const endBoundary    = endBoundaryRaw.length === 16 ? endBoundaryRaw + ':00' : endBoundaryRaw;
 
+  // Handle Interval trigger: compute repetition_interval from unit+value
+  let intervalRepetitionInterval = parseDurationSelect('cf-rep-interval','cf-rep-interval-custom');
+  if (trigger_type === 'Interval') {
+    const val  = parseInt((document.getElementById('cf-interval-value') || {}).value || '1', 10) || 1;
+    const unit = (document.getElementById('cf-interval-unit') || {}).value || 'Hours';
+    intervalRepetitionInterval = unit === 'Hours' ? `PT${val}H` : `PT${val}M`;
+  }
+
+  // Collect env vars from the textarea (newline-separated KEY=VALUE)
+  const envVarsEl  = document.getElementById('cf-env-vars');
+  const env_vars   = envVarsEl ? envVarsEl.value.trim() : '';
+
   const advancedParams = {
     execution_time_limit:  parseDurationSelect('cf-exec-limit',  'cf-exec-limit-custom'),
-    repetition_interval:   parseDurationSelect('cf-rep-interval','cf-rep-interval-custom'),
-    repetition_duration:   parseDurationSelect('cf-rep-duration','cf-rep-duration-custom'),
-    stop_at_duration_end:  !!(document.getElementById('cf-rep-stop-end')    || {}).checked,
+    repetition_interval:   intervalRepetitionInterval,
+    repetition_duration:   trigger_type === 'Interval' ? '' : parseDurationSelect('cf-rep-duration','cf-rep-duration-custom'),
+    stop_at_duration_end:  trigger_type === 'Interval' ? false : !!(document.getElementById('cf-rep-stop-end')    || {}).checked,
     end_boundary:          endBoundary,
     delay:                 parseDurationSelect('cf-boot-delay',  'cf-boot-delay-custom'),
     random_delay:          parseDurationSelect('cf-random-delay','cf-random-delay-custom'),
@@ -1380,7 +1540,11 @@ async function submitCreateTask() {
     run_only_if_idle:      !!(document.getElementById('cf-run-on-idle')     || {}).checked,
     disallow_on_batteries: !!(document.getElementById('cf-no-battery-start')|| {}).checked,
     stop_on_batteries:     !!(document.getElementById('cf-stop-on-battery') || {}).checked,
+    env_vars,
   };
+
+  // For Interval, the trigger_type sent to backend is 'Daily' (backend maps Interval -> Daily)
+  const backendTriggerType = trigger_type === 'Interval' ? 'Daily' : trigger_type;
 
   const taskParams = {
     name,
@@ -1390,7 +1554,7 @@ async function submitCreateTask() {
     program_path,
     arguments:     arguments_str,
     working_dir,
-    trigger_type,
+    trigger_type:  backendTriggerType,
     start_datetime,
     days_interval,
     run_as_user:   run_as,
@@ -1403,9 +1567,11 @@ async function submitCreateTask() {
   try {
     if (_editTaskPath) {
       await invoke('update_task', { path: _editTaskPath, params: taskParams });
+      appendAuditLog('edit_task', name, 'Trigger: ' + trigger_type);
       showToast('Task updated successfully!', 'success');
     } else {
       await invoke('create_task', { params: taskParams });
+      appendAuditLog('create_task', name, 'Trigger: ' + trigger_type);
       showToast('Task created successfully!', 'success');
     }
     _editTaskPath = null;
@@ -1535,9 +1701,16 @@ function showCtxMenu(event, task) {
 
   const menu = document.getElementById('ctx-menu');
   menu.innerHTML = `
+    <div class="ctx-item" data-ctx-action="edit">✏️ Edit</div>
+    <div class="ctx-item" data-ctx-action="clone">📋 Clone</div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" data-ctx-action="copy-path">📋 Copy Path</div>
+    <div class="ctx-item" data-ctx-action="copy-name">📋 Copy Name</div>
+    <div class="ctx-sep"></div>
     <div class="ctx-item" data-ctx-action="run">▶ Run</div>
     <div class="ctx-item" data-ctx-action="stop">⏹ Stop</div>
     <div class="ctx-item" data-ctx-action="toggle">${task.enabled ? '⏸ Disable' : '▶ Enable'}</div>
+    <div class="ctx-sep"></div>
     <div class="ctx-item" data-ctx-action="xml">＜/＞ Export XML</div>
     <div class="ctx-sep"></div>
     <div class="ctx-item danger" data-ctx-action="delete">🗑 Delete</div>`;
@@ -1549,11 +1722,15 @@ function showCtxMenu(event, task) {
     const t = ctxTask;
     hideCtxMenu();
     switch (item.dataset.ctxAction) {
-      case 'run':    runTask(t.path);              break;
-      case 'stop':   stopTask(t.path);             break;
-      case 'toggle': toggleTask(t);                break;
-      case 'xml':    exportXml(t.path);            break;
-      case 'delete': deleteTask(t.path, t.name);   break;
+      case 'edit':      openEditDialog(t);                       break;
+      case 'clone':     cloneTask(t);                            break;
+      case 'copy-path': navigator.clipboard.writeText(t.path);   break;
+      case 'copy-name': navigator.clipboard.writeText(t.name);   break;
+      case 'run':       runTask(t.path);                         break;
+      case 'stop':      stopTask(t.path);                        break;
+      case 'toggle':    toggleTask(t);                           break;
+      case 'xml':       exportXml(t.path);                       break;
+      case 'delete':    deleteTask(t.path, t.name);              break;
     }
   };
 
@@ -1664,6 +1841,30 @@ const TEMPLATES = [
       arguments:     '-NonInteractive -File C:\\Scripts\\disk_monitor.ps1',
     }
   },
+  {
+    name: 'Hourly',
+    description: 'Run a script every hour, indefinitely',
+    icon: '🕐',
+    prefill: { name: 'Hourly_Task', trigger_type: 'Interval', interval_value: 1, interval_unit: 'Hours', interval_start: '00:00' }
+  },
+  {
+    name: 'Every 4 Hours',
+    description: 'Run a script every 4 hours, indefinitely',
+    icon: '⏱️',
+    prefill: { name: 'Every_4_Hours', trigger_type: 'Interval', interval_value: 4, interval_unit: 'Hours', interval_start: '00:00' }
+  },
+  {
+    name: 'Every 6 Hours',
+    description: 'Run a script every 6 hours, indefinitely',
+    icon: '⏱️',
+    prefill: { name: 'Every_6_Hours', trigger_type: 'Interval', interval_value: 6, interval_unit: 'Hours', interval_start: '00:00' }
+  },
+  {
+    name: 'Every 30 Minutes',
+    description: 'Run a script every 30 minutes, indefinitely',
+    icon: '⏱️',
+    prefill: { name: 'Every_30_Min', trigger_type: 'Interval', interval_value: 30, interval_unit: 'Minutes', interval_start: '00:00' }
+  },
 ];
 
 function renderTemplates() {
@@ -1702,6 +1903,11 @@ function renderSettings() {
   const content = document.getElementById('settings-content');
   if (!content) return;
 
+  const accentColors = ['#3b82f6','#6366f1','#10b981','#f59e0b','#ef4444','#ec4899','#8b5cf6','#06b6d4'];
+  const curAccent = localStorage.getItem('wtp_accent') || '#3b82f6';
+  const notifyEnabled = localStorage.getItem('wtp_notifyOnFailure') === 'true';
+  const minimizeToTray = localStorage.getItem('wtp_minimizeToTray') !== 'false';
+
   content.innerHTML = `
     <div class="settings-page">
       <h2 class="section-heading">⚙ Settings</h2>
@@ -1722,16 +1928,49 @@ function renderSettings() {
         <div class="settings-row" id="s-interval-row" style="display:${settings.autoRefresh ? '' : 'none'}">
           <div>
             <div class="settings-label">Refresh Interval</div>
-            <div class="settings-sub">Seconds between automatic refreshes</div>
+            <div class="settings-sub">Seconds between automatic refreshes (5–300)</div>
           </div>
           <input type="number" id="s-refresh-interval" value="${settings.refreshInterval}"
                  min="5" max="300" style="width:80px"
                  onchange="onRefreshIntervalChange()" />
         </div>
+        <div class="settings-row">
+          <div>
+            <div class="settings-label">Minimize to Tray</div>
+            <div class="settings-sub">Hide to system tray when closing the window</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="s-minimize-tray" ${minimizeToTray ? 'checked' : ''}
+                   onchange="localStorage.setItem('wtp_minimizeToTray', this.checked)" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
       </div>
 
       <div class="settings-section">
-        <div class="settings-section-title">Display</div>
+        <div class="settings-section-title">Notifications</div>
+        <div class="settings-row">
+          <div>
+            <div class="settings-label">🔔 Desktop Notifications on Task Failure</div>
+            <div class="settings-sub">Show a system notification when a task's result changes to an error</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="s-notify-failure" ${notifyEnabled ? 'checked' : ''}
+                   onchange="onNotifyFailureChange()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="settings-label">Test Notification</div>
+            <div class="settings-sub">Send a test desktop notification now</div>
+          </div>
+          <button class="btn" onclick="sendTestNotification()">🔔 Test</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Appearance</div>
         <div class="settings-row">
           <div>
             <div class="settings-label">Show System Tasks</div>
@@ -1742,6 +1981,38 @@ function renderSettings() {
                    onchange="settings.showSystemTasks = this.checked; localStorage.setItem('showSystemTasks', this.checked); refreshAll()" />
             <span class="toggle-slider"></span>
           </label>
+        </div>
+        <div class="settings-row" style="flex-direction:column;align-items:flex-start;gap:10px">
+          <div>
+            <div class="settings-label">Accent Color</div>
+            <div class="settings-sub">Choose the UI accent color</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            ${accentColors.map(c => `
+              <button class="color-swatch ${c===curAccent?'active':''}" style="background:${c}"
+                      onclick="applyAccentColor('${c}')" title="${c}"></button>`).join('')}
+            <input type="color" id="s-accent-custom" value="${curAccent}"
+                   oninput="applyAccentColor(this.value)" style="width:36px;height:36px;padding:2px;border-radius:6px;border:1px solid var(--border);cursor:pointer;background:transparent" />
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">⌨️ Keyboard Shortcuts</div>
+        <div class="settings-row">
+          <div class="settings-sub" style="width:100%">
+            <button class="btn" onclick="showHelpModal()">Show All Shortcuts</button>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:120px 1fr;gap:4px 12px;font-size:12px;padding:8px 0">
+          <span style="color:var(--text3)">N</span><span>New task</span>
+          <span style="color:var(--text3)">F5 / R</span><span>Refresh</span>
+          <span style="color:var(--text3)">E</span><span>Edit selected task</span>
+          <span style="color:var(--text3)">Del</span><span>Delete selected task</span>
+          <span style="color:var(--text3)">/ or Ctrl+F</span><span>Focus search</span>
+          <span style="color:var(--text3)">Esc</span><span>Close modal/panel</span>
+          <span style="color:var(--text3)">1–5</span><span>Navigate pages</span>
+          <span style="color:var(--text3)">?</span><span>Show this help</span>
         </div>
       </div>
 
@@ -1773,6 +2044,10 @@ function onAutoRefreshChange() {
   if (settings.autoRefresh) {
     autoRefreshTimer = setInterval(refreshAll, settings.refreshInterval * 1000);
   }
+
+  // Update live indicator
+  const ind = document.getElementById('live-refresh-indicator');
+  if (ind) ind.style.display = settings.autoRefresh ? '' : 'none';
 }
 
 function onRefreshIntervalChange() {
@@ -1791,9 +2066,34 @@ async function init() {
     settings.autoRefresh = true;
     settings.refreshInterval = parseInt(localStorage.getItem('refreshInterval') || '30', 10) || 30;
     autoRefreshTimer = setInterval(refreshAll, settings.refreshInterval * 1000);
+    const ind = document.getElementById('live-refresh-indicator');
+    if (ind) ind.style.display = '';
   }
   if (localStorage.getItem('showSystemTasks') === 'false') {
     settings.showSystemTasks = false;
+  }
+
+  // Apply saved accent color
+  const savedAccent = localStorage.getItem('wtp_accent');
+  if (savedAccent) applyAccentColor(savedAccent);
+
+  // Load audit log from localStorage
+  try {
+    const stored = localStorage.getItem('wtp_auditLog');
+    if (stored) _auditLog = JSON.parse(stored);
+  } catch (_) { _auditLog = []; }
+
+  // Load column preferences from localStorage
+  try {
+    const stored = localStorage.getItem('wtp_colPrefs');
+    if (stored) Object.assign(_colPrefs, JSON.parse(stored));
+  } catch (_) {}
+
+  // Request notification permission if enabled
+  if (localStorage.getItem('wtp_notifyOnFailure') === 'true') {
+    if (Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
   }
 
   // Check admin status
@@ -1815,6 +2115,12 @@ async function init() {
   document.addEventListener('click', e => {
     const menu = document.getElementById('ctx-menu');
     if (menu && !menu.contains(e.target)) hideCtxMenu();
+    // Hide column picker if clicking outside
+    const picker = document.getElementById('col-picker');
+    const btn = document.getElementById('col-picker-btn');
+    if (picker && picker.style.display !== 'none' && !picker.contains(e.target) && e.target !== btn) {
+      picker.style.display = 'none';
+    }
   });
 
   // Close modal on overlay click
@@ -1822,16 +2128,679 @@ async function init() {
     if (e.target === document.getElementById('modal-overlay')) closeModal();
   });
 
-  // Escape key: close modal and context menu
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-      closeModal();
-      hideCtxMenu();
-    }
-  });
+  // Global keyboard shortcuts
+  document.addEventListener('keydown', handleKeyboard);
 
   await refreshFolders();
   showPage('dashboard');
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// ── Health scoring ────────────────────────────────────────────────────────────
+function healthScore(task) {
+  const code = task.last_result_code;
+  if (code !== 0 && code !== 267009 && code !== 267011) return 'bad';
+  if (task.last_result === 'Not Run Yet' || !task.enabled) return 'warning';
+  return 'good';
+}
+
+// ── Bulk operations ───────────────────────────────────────────────────────────
+function toggleSelectAll(checked) {
+  _selectedPaths.clear();
+  document.querySelectorAll('.task-cb').forEach(cb => {
+    cb.checked = checked;
+    const tr = cb.closest('tr');
+    if (tr) tr.classList.toggle('row-selected', checked);
+    if (checked) _selectedPaths.add(cb.dataset.path);
+  });
+  updateBulkToolbar();
+}
+
+function updateBulkToolbar() {
+  const toolbar = document.getElementById('bulk-toolbar');
+  const label   = document.getElementById('bulk-count-label');
+  if (!toolbar) return;
+  const n = _selectedPaths.size;
+  toolbar.style.display = n > 0 ? 'flex' : 'none';
+  if (label) label.textContent = n + ' selected';
+  const allCb   = document.getElementById('select-all-cb');
+  const taskCbs = document.querySelectorAll('.task-cb');
+  if (allCb && taskCbs.length > 0) {
+    allCb.indeterminate = n > 0 && n < taskCbs.length;
+    allCb.checked = n === taskCbs.length;
+  }
+}
+
+function clearBulkSelection() {
+  _selectedPaths.clear();
+  document.querySelectorAll('.task-cb').forEach(cb => { cb.checked = false; });
+  document.querySelectorAll('#task-tbody tr').forEach(r => r.classList.remove('row-selected'));
+  const allCb = document.getElementById('select-all-cb');
+  if (allCb) { allCb.checked = false; allCb.indeterminate = false; }
+  updateBulkToolbar();
+}
+
+async function bulkRun() {
+  const paths = [..._selectedPaths];
+  let ok = 0, fail = 0;
+  for (const path of paths) {
+    try { await invoke('run_task', { path }); ok++; } catch { fail++; }
+  }
+  showToast(`Run: ${ok} ok, ${fail} failed`, ok > 0 ? 'success' : 'error');
+  appendAuditLog('bulk_run', `${paths.length} tasks`, paths.join(', '));
+  clearBulkSelection();
+  setTimeout(refreshAll, 1000);
+}
+
+async function bulkEnable() {
+  const paths = [..._selectedPaths];
+  for (const path of paths) {
+    try { await invoke('set_task_enabled', { path, enabled: true }); } catch (_) {}
+  }
+  appendAuditLog('bulk_enable', `${paths.length} tasks`, paths.join(', '));
+  showToast(`Enabled ${paths.length} tasks`, 'success');
+  clearBulkSelection();
+  setTimeout(refreshAll, 500);
+}
+
+async function bulkDisable() {
+  const paths = [..._selectedPaths];
+  for (const path of paths) {
+    try { await invoke('set_task_enabled', { path, enabled: false }); } catch (_) {}
+  }
+  appendAuditLog('bulk_disable', `${paths.length} tasks`, paths.join(', '));
+  showToast(`Disabled ${paths.length} tasks`, 'success');
+  clearBulkSelection();
+  setTimeout(refreshAll, 500);
+}
+
+async function bulkExportXml() {
+  const paths = [..._selectedPaths];
+  for (const path of paths) {
+    try {
+      const xml  = await invoke('export_task_xml', { path });
+      const name = path.split('\\').pop();
+      const blob = new Blob([xml], { type: 'application/xml' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url; a.download = name + '.xml';
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+    } catch (_) {}
+  }
+  appendAuditLog('bulk_export_xml', `${paths.length} tasks`, '');
+  showToast(`Exported ${paths.length} task(s) as XML`, 'success');
+}
+
+async function bulkDelete() {
+  const paths     = [..._selectedPaths];
+  const taskNames = paths.map(p => p.split('\\').pop()).join(', ');
+  openModal('Delete ' + paths.length + ' Tasks',
+    `<div style="padding:16px 16px 8px">
+       <p style="color:var(--text2)">Delete <strong>${paths.length}</strong> tasks? This cannot be undone.</p>
+       <div style="font-size:11px;color:var(--text3);margin-top:8px;max-height:100px;overflow-y:auto">${escHtml(taskNames)}</div>
+     </div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-danger" id="bulk-del-ok">Delete All</button>`);
+  setTimeout(() => {
+    const btn = document.getElementById('bulk-del-ok');
+    if (btn) btn.onclick = async () => {
+      closeModal();
+      let ok = 0;
+      for (const path of paths) {
+        try { await invoke('delete_task', { path }); ok++; } catch (_) {}
+      }
+      appendAuditLog('bulk_delete', `${ok} tasks`, paths.join(', '));
+      showToast(`Deleted ${ok} tasks`, 'success');
+      clearBulkSelection();
+      closeDetail();
+      refreshAll();
+    };
+  }, 0);
+}
+
+// ── Task clone ────────────────────────────────────────────────────────────────
+function cloneTask(task) {
+  const rawTrigger = task.triggers && task.triggers.length > 0 ? task.triggers[0] : 'Once';
+  const triggerDisplayMap = {
+    'once':'Once','daily':'Daily','weekly':'Weekly','monthly':'Monthly',
+    'at boot':'Boot','boot':'Boot','at logon':'Logon','logon':'Logon',
+    'on idle':'Idle','idle':'Idle',
+  };
+  const normalizedTrigger = triggerDisplayMap[rawTrigger.toLowerCase()] || 'Once';
+  const prefill = {
+    name:         task.name + '_Copy',
+    folder:       task.folder,
+    description:  task.description || '',
+    run_as_user:  task.run_as_user || '',
+    hidden:       task.hidden || false,
+    enabled:      task.enabled !== false,
+    trigger_type: normalizedTrigger,
+  };
+  openCreateDialog(prefill);
+  setTimeout(() => {
+    const titleEl = document.getElementById('modal-title');
+    if (titleEl) titleEl.textContent = 'Clone Task';
+  }, 50);
+}
+
+// ── Folder management ─────────────────────────────────────────────────────────
+function openCreateFolderDialog(parentPath) {
+  const body = `
+    <div class="form-group">
+      <label>Folder Name *</label>
+      <input type="text" id="new-folder-name" class="form-control" placeholder="MyFolder" />
+      <div class="form-hint">Will be created under: ${escHtml(parentPath)}</div>
+    </div>`;
+  const footer = `
+    <button class="btn btn-primary" onclick="submitCreateFolder('${escHtml(parentPath)}')">Create</button>
+    <button class="btn" onclick="closeModal()">Cancel</button>`;
+  openModal('New Folder', body, footer);
+}
+
+async function submitCreateFolder(parentPath) {
+  const nameEl = document.getElementById('new-folder-name');
+  const name   = nameEl ? nameEl.value.trim() : '';
+  if (!name) { showToast('Folder name is required', 'error'); return; }
+  const fullPath = parentPath === '\\' ? '\\' + name : parentPath + '\\' + name;
+  try {
+    await invoke('create_folder', { path: fullPath });
+    appendAuditLog('create_folder', fullPath, '');
+    showToast('Folder created: ' + fullPath, 'success');
+    closeModal();
+    await refreshFolders();
+  } catch (err) {
+    showToast('Create folder failed: ' + err, 'error');
+  }
+}
+
+// ── Task history ──────────────────────────────────────────────────────────────
+async function loadTaskHistory(path) {
+  const container = document.getElementById('task-history-container');
+  if (!container) return;
+  container.innerHTML = '<span class="spinner"></span> Loading...';
+  try {
+    const records = await invoke('get_task_history', { path, maxRecords: 100 });
+    if (!records || records.length === 0) {
+      container.innerHTML = `
+        <div class="info-box" style="margin-top:6px">
+          No history available — ensure Task History is enabled in Windows Event Viewer.
+        </div>`;
+      return;
+    }
+    container.innerHTML = `
+      <table class="detail-table" style="margin-top:6px">
+        <thead><tr>
+          <th style="font-size:11px">Start Time</th>
+          <th style="font-size:11px">Result</th>
+          <th style="font-size:11px">Duration</th>
+        </tr></thead>
+        <tbody>
+          ${records.map(r => `
+            <tr class="${r.result_code === 0 ? '' : 'result-error'}">
+              <td>${escHtml(r.start_time)}</td>
+              <td>${escHtml(r.result_code === 0 ? 'Success' : r.result_text)}</td>
+              <td>${r.duration_secs > 0 ? r.duration_secs.toFixed(1) + 's' : '-'}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } catch (err) {
+    container.innerHTML = `<div class="info-box">Could not load history: ${escHtml(String(err))}</div>`;
+  }
+}
+
+// ── Live Monitor ──────────────────────────────────────────────────────────────
+function startLiveMonitor() {
+  renderLiveMonitor();
+  if (liveRefreshInterval) clearInterval(liveRefreshInterval);
+  liveRefreshInterval = setInterval(() => {
+    if (currentPage === 'live') renderLiveMonitor();
+  }, 3000);
+}
+
+async function renderLiveMonitor() {
+  const content = document.getElementById('live-content');
+  if (!content) return;
+  try {
+    const tasks = await invoke('get_running_tasks');
+    const now   = new Date().toLocaleTimeString();
+    content.innerHTML = `
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+        <h2 class="section-heading" style="margin:0">Live Monitor</h2>
+        <span class="live-dot"></span>
+        <span style="color:var(--text3);font-size:12px">Auto-refreshes every 3 seconds — last updated: ${now}</span>
+      </div>
+      ${tasks.length === 0
+        ? '<div style="padding:40px;text-align:center;color:var(--text2)">No tasks currently running</div>'
+        : `<table class="detail-table" style="width:100%">
+            <thead><tr>
+              <th>Task Name</th><th>Path</th><th>Current Action</th><th>State</th><th>Action</th>
+            </tr></thead>
+            <tbody>
+              ${tasks.map(t => `
+                <tr>
+                  <td>${escHtml(t.name)}</td>
+                  <td class="cell-trunc" title="${escHtml(t.path)}">${escHtml(t.path)}</td>
+                  <td>${escHtml(t.current_action || '-')}</td>
+                  <td><span class="badge badge-running">${escHtml(t.state)}</span></td>
+                  <td><button class="btn btn-danger" onclick="stopTask('${escHtml(t.path)}')">Stop</button></td>
+                </tr>`).join('')}
+            </tbody>
+          </table>`}`;
+  } catch (err) {
+    const c = document.getElementById('live-content');
+    if (c) c.innerHTML = `<div style="color:var(--red);padding:16px">Error: ${escHtml(String(err))}</div>`;
+  }
+}
+
+// ── Audit log ─────────────────────────────────────────────────────────────────
+function appendAuditLog(action, target, detail) {
+  _auditLog.unshift({ ts: new Date().toISOString(), action, target, detail: detail || '' });
+  if (_auditLog.length > 500) _auditLog.length = 500;
+  try { localStorage.setItem('wtp_auditLog', JSON.stringify(_auditLog)); } catch (_) {}
+}
+
+function renderAuditLog() {
+  const content = document.getElementById('auditlog-content');
+  if (!content) return;
+  content.innerHTML = `
+    <h2 class="section-heading">Audit Log</h2>
+    <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+      <input type="text" id="al-search" class="form-control" placeholder="Filter..." style="max-width:220px"
+             oninput="renderAuditLogTable()" />
+      <select id="al-action-filter" class="form-control" style="max-width:160px" onchange="renderAuditLogTable()">
+        <option value="">All Actions</option>
+        <option value="create_task">Create Task</option>
+        <option value="edit_task">Edit Task</option>
+        <option value="delete_task">Delete Task</option>
+        <option value="run_task">Run Task</option>
+        <option value="stop_task">Stop Task</option>
+        <option value="enable_task">Enable Task</option>
+        <option value="disable_task">Disable Task</option>
+        <option value="bulk_run">Bulk Run</option>
+        <option value="bulk_delete">Bulk Delete</option>
+        <option value="create_folder">Create Folder</option>
+      </select>
+      <button class="btn" onclick="exportAuditLogCsv()">Export CSV</button>
+      <button class="btn btn-danger" onclick="clearAuditLog()">Clear Log</button>
+      <span style="color:var(--text3);font-size:11px">${_auditLog.length} entries</span>
+    </div>
+    <div id="al-table-container"></div>`;
+  renderAuditLogTable();
+}
+
+function renderAuditLogTable() {
+  const container = document.getElementById('al-table-container');
+  if (!container) return;
+  const search = ((document.getElementById('al-search') || {}).value || '').toLowerCase();
+  const actionFilter = (document.getElementById('al-action-filter') || {}).value || '';
+  const filtered = _auditLog.filter(e => {
+    const matchSearch = !search || [e.action, e.target, e.detail, e.ts].some(v => String(v).toLowerCase().includes(search));
+    const matchAction = !actionFilter || e.action === actionFilter;
+    return matchSearch && matchAction;
+  });
+  if (filtered.length === 0) {
+    container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text2)">No log entries found</div>';
+    return;
+  }
+  container.innerHTML = `
+    <table class="detail-table" style="width:100%">
+      <thead><tr>
+        <th>Timestamp</th><th>Action</th><th>Target</th><th>Detail</th>
+      </tr></thead>
+      <tbody>
+        ${filtered.slice(0, 200).map(e => `
+          <tr>
+            <td style="white-space:nowrap;font-family:monospace;font-size:11px">${escHtml(e.ts.replace('T',' ').replace(/\.\d+Z$/, ''))}</td>
+            <td><span class="badge badge-unknown">${escHtml(e.action)}</span></td>
+            <td>${escHtml(e.target || '-')}</td>
+            <td class="cell-trunc" title="${escHtml(e.detail || '')}">${escHtml(e.detail || '-')}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+function exportAuditLogCsv() {
+  const header = 'Timestamp,Action,Target,Detail\n';
+  const rows   = _auditLog.map(e =>
+    [e.ts, e.action, e.target, e.detail].map(v => '"' + String(v || '').replace(/"/g, '""') + '"').join(',')
+  ).join('\n');
+  const blob = new Blob([header + rows], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = 'wintaskpro-audit-' + new Date().toISOString().slice(0,10) + '.csv';
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+function clearAuditLog() {
+  openModal('Clear Audit Log',
+    '<p style="padding:16px">Clear all audit log entries? This cannot be undone.</p>',
+    `<button class="btn" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-danger" id="al-clear-ok">Clear</button>`);
+  setTimeout(() => {
+    const btn = document.getElementById('al-clear-ok');
+    if (btn) btn.onclick = () => {
+      _auditLog = [];
+      try { localStorage.removeItem('wtp_auditLog'); } catch (_) {}
+      closeModal();
+      showToast('Audit log cleared', 'success');
+      renderAuditLog();
+    };
+  }, 0);
+}
+
+// ── Column picker ─────────────────────────────────────────────────────────────
+const COL_LABELS = {
+  cb:'Checkbox', name:'Name', health:'Health', status:'Status',
+  triggers:'Triggers', action:'Action', last_run:'Last Run',
+  next_run:'Next Run', last_result:'Last Result', controls:'Controls'
+};
+
+function toggleColPicker() {
+  const picker = document.getElementById('col-picker');
+  if (!picker) return;
+  if (picker.style.display === 'none' || !picker.style.display) {
+    picker.style.display = 'block';
+    picker.innerHTML = `<div class="col-picker-inner">
+      <div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:6px">Visible Columns</div>
+      ${Object.keys(_colPrefs).map(col => `
+        <label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer">
+          <input type="checkbox" ${_colPrefs[col]?'checked':''} onchange="toggleColumn('${col}',this.checked)" />
+          ${escHtml(COL_LABELS[col] || col)}
+        </label>`).join('')}
+    </div>`;
+  } else {
+    picker.style.display = 'none';
+  }
+}
+
+function toggleColumn(col, visible) {
+  _colPrefs[col] = visible;
+  try { localStorage.setItem('wtp_colPrefs', JSON.stringify(_colPrefs)); } catch (_) {}
+  applyColumnVisibility();
+}
+
+function applyColumnVisibility() {
+  Object.entries(_colPrefs).forEach(([col, visible]) => {
+    document.querySelectorAll(`[data-col="${col}"]`).forEach(el => {
+      el.style.display = visible ? '' : 'none';
+    });
+  });
+}
+
+// ── Accent color ──────────────────────────────────────────────────────────────
+function applyAccentColor(color) {
+  document.documentElement.style.setProperty('--accent', color);
+  try { localStorage.setItem('wtp_accent', color); } catch (_) {}
+  document.querySelectorAll('.color-swatch').forEach(s => {
+    s.classList.toggle('active', s.style.background === color);
+  });
+}
+
+// ── Notifications ─────────────────────────────────────────────────────────────
+function onNotifyFailureChange() {
+  const enabled = document.getElementById('s-notify-failure').checked;
+  localStorage.setItem('wtp_notifyOnFailure', enabled);
+  if (enabled && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+function sendTestNotification() {
+  if (Notification.permission === 'granted') {
+    new Notification('WinTaskPro Test', { body: 'Notifications are working!' });
+  } else if (Notification.permission === 'denied') {
+    showToast('Notifications are blocked by the browser', 'error');
+  } else {
+    Notification.requestPermission().then(p => {
+      if (p === 'granted') new Notification('WinTaskPro Test', { body: 'Notifications are working!' });
+    });
+  }
+}
+
+// ── Script editor ─────────────────────────────────────────────────────────────
+let _scriptEditorPath = '';
+let _scriptEditorType = '';
+
+function openScriptEditor() {
+  const pathEl = document.getElementById('cf-script-path');
+  const typeEl = document.getElementById('cf-action-type');
+  const path   = pathEl ? pathEl.value.trim() : '';
+  const type   = typeEl ? typeEl.value : 'batch';
+  _scriptEditorPath = path;
+  _scriptEditorType = type;
+
+  const overlay = document.getElementById('script-editor-overlay');
+  const titleEl = document.getElementById('script-editor-title');
+  const langEl  = document.getElementById('script-editor-lang');
+  const langNames = { batch:'Batch', powershell:'PowerShell', python:'Python', vbscript:'VBScript' };
+  if (titleEl) titleEl.textContent = 'Edit Script' + (path ? ': ' + path.split('\\').pop() : '');
+  if (langEl)  langEl.textContent  = langNames[type] || type;
+  if (overlay) overlay.style.display = 'flex';
+
+  const contentEl = document.getElementById('script-editor-content');
+  if (contentEl) {
+    contentEl.value = '';
+    if (path) {
+      invoke('read_file', { path }).then(text => {
+        if (contentEl) contentEl.value = text;
+        updateScriptEditorStats();
+      }).catch(() => { updateScriptEditorStats(); });
+    }
+  }
+}
+
+function closeScriptEditor() {
+  const overlay = document.getElementById('script-editor-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+function updateScriptEditorStats() {
+  const el    = document.getElementById('script-editor-content');
+  const lines = document.getElementById('script-editor-lines');
+  if (!el || !lines) return;
+  lines.textContent = (el.value ? el.value.split('\n').length : 0) + ' lines';
+}
+
+async function saveScriptFile() {
+  const contentEl = document.getElementById('script-editor-content');
+  if (!contentEl || !_scriptEditorPath) {
+    showToast('No file path set', 'error'); return;
+  }
+  try {
+    await invoke('write_file', { path: _scriptEditorPath, content: contentEl.value });
+    showToast('Script saved to ' + _scriptEditorPath, 'success');
+    closeScriptEditor();
+  } catch (err) {
+    showToast('Save failed: ' + err, 'error');
+  }
+}
+
+// ── Environment variables helpers ─────────────────────────────────────────────
+function addEnvVar() {
+  const ta = document.getElementById('cf-env-vars');
+  if (ta) ta.style.display = '';
+}
+
+// ── XML tab helpers ───────────────────────────────────────────────────────────
+function generateXmlPreview() {
+  const ta = document.getElementById('cf-task-xml');
+  if (!ta) return;
+  const name    = ((document.getElementById('cf-name')         || {}).value || 'MyTask').trim();
+  const desc    = ((document.getElementById('cf-desc')         || {}).value || '').trim();
+  const program = ((document.getElementById('cf-program')      || {}).value
+               || (document.getElementById('cf-script-path')   || {}).value || '').trim();
+  const args    = ((document.getElementById('cf-args')         || {}).value
+               || (document.getElementById('cf-extra-args')    || {}).value || '').trim();
+  const trigger = (document.getElementById('cf-trigger-type')  || {}).value || 'Daily';
+  const dt      = ((document.getElementById('cf-daily-time')   || {}).value
+               || (document.getElementById('cf-datetime')      || {}).value || '').trim();
+  const today   = new Date().toISOString().slice(0, 10);
+  const startBoundary = today + 'T' + (dt ? dt.slice(0,5) + ':00' : '08:00:00');
+
+  ta.value = `<?xml version="1.0" encoding="UTF-16"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n  <RegistrationInfo>\n    <Description>${escHtml(desc)}</Description>\n  </RegistrationInfo>\n  <Triggers>\n    <CalendarTrigger>\n      <StartBoundary>${startBoundary}</StartBoundary>\n      <Enabled>true</Enabled>\n    </CalendarTrigger>\n  </Triggers>\n  <Actions Context="Author">\n    <Exec>\n      <Command>${escHtml(program)}</Command>\n      <Arguments>${escHtml(args)}</Arguments>\n    </Exec>\n  </Actions>\n  <Settings>\n    <Enabled>true</Enabled>\n    <Hidden>false</Hidden>\n  </Settings>\n</Task>`;
+}
+
+function applyXmlToForm() {
+  const ta = document.getElementById('cf-task-xml');
+  if (!ta) return;
+  try {
+    const doc  = new DOMParser().parseFromString(ta.value.trim(), 'application/xml');
+    const txt  = sel => { const el = doc.querySelector(sel); return el ? el.textContent.trim() : ''; };
+    const desc = txt('Description');
+    const cmd  = txt('Command');
+    const args = txt('Arguments');
+    if (desc) { const el = document.getElementById('cf-desc');    if (el) el.value = desc; }
+    if (cmd)  { const el = document.getElementById('cf-program'); if (el) el.value = cmd; }
+    if (args) { const el = document.getElementById('cf-args');    if (el) el.value = args; }
+    showToast('XML applied to form (best-effort)', 'success');
+  } catch (err) {
+    showToast('Failed to parse XML: ' + err, 'error');
+  }
+}
+
+// ── Interval quick-pick ───────────────────────────────────────────────────────
+function setIntervalQuick(value, unit) {
+  const valEl  = document.getElementById('cf-interval-value');
+  const unitEl = document.getElementById('cf-interval-unit');
+  if (valEl)  valEl.value  = value;
+  if (unitEl) unitEl.value = unit;
+}
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+function handleKeyboard(e) {
+  const tag = document.activeElement && document.activeElement.tagName;
+  const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+  if (e.key === 'Escape') {
+    closeModal(); closeScriptEditor(); closeHelpModal(); hideCtxMenu(); return;
+  }
+  if (inInput) return;
+  switch (e.key) {
+    case 'n': case 'N':
+      if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); openCreateDialog(); }
+      break;
+    case 'F5': case 'r': case 'R': e.preventDefault(); refreshAll(); break;
+    case 'e': case 'E': if (selectedTask) openEditDialog(selectedTask); break;
+    case 'Delete': if (selectedTask) deleteTask(selectedTask.path, selectedTask.name); break;
+    case '/': e.preventDefault(); { const s = document.getElementById('search-input'); if (s) s.focus(); } break;
+    case 'f': if (e.ctrlKey) { e.preventDefault(); const s = document.getElementById('search-input'); if (s) s.focus(); } break;
+    case '?': showHelpModal(); break;
+    case '1': showPage('dashboard');  break;
+    case '2': showPage('tasks');      break;
+    case '3': showPage('live');       break;
+    case '4': showPage('templates');  break;
+    case '5': showPage('settings');   break;
+  }
+}
+
+function showHelpModal() {
+  const body = `
+    <div style="padding:4px 0">
+      <table class="detail-table">
+        <thead><tr><th>Key</th><th>Action</th></tr></thead>
+        <tbody>
+          <tr><td style="font-family:monospace">N</td><td>New task</td></tr>
+          <tr><td style="font-family:monospace">F5 / R</td><td>Refresh all tasks</td></tr>
+          <tr><td style="font-family:monospace">E</td><td>Edit selected task</td></tr>
+          <tr><td style="font-family:monospace">Del</td><td>Delete selected task</td></tr>
+          <tr><td style="font-family:monospace">/</td><td>Focus search box</td></tr>
+          <tr><td style="font-family:monospace">Escape</td><td>Close modal / panel</td></tr>
+          <tr><td style="font-family:monospace">?</td><td>Show keyboard shortcuts</td></tr>
+          <tr><td style="font-family:monospace">1</td><td>Go to Dashboard</td></tr>
+          <tr><td style="font-family:monospace">2</td><td>Go to Task Manager</td></tr>
+          <tr><td style="font-family:monospace">3</td><td>Go to Live Monitor</td></tr>
+          <tr><td style="font-family:monospace">4</td><td>Go to Script Library</td></tr>
+          <tr><td style="font-family:monospace">5</td><td>Go to Settings</td></tr>
+        </tbody>
+      </table>
+    </div>`;
+  const overlay = document.getElementById('help-modal-overlay');
+  const bodyEl  = document.getElementById('help-modal-body');
+  if (overlay) overlay.style.display = 'flex';
+  if (bodyEl)  bodyEl.innerHTML = body;
+}
+
+function closeHelpModal() {
+  const overlay = document.getElementById('help-modal-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+// ── Enhanced dashboard ────────────────────────────────────────────────────────
+loadDashboard = async function() {
+  const content = document.getElementById('dash-content');
+  content.innerHTML = '<div class="loading-msg"><span class="spinner"></span> Loading...</div>';
+  setStatus('Loading dashboard...');
+  try {
+    const tasks    = await invoke('get_all_tasks');
+    const total    = tasks.length;
+    const running  = tasks.filter(t => t.status === 'Running').length;
+    const ready    = tasks.filter(t => t.status === 'Ready').length;
+    const disabled = tasks.filter(t => t.status === 'Disabled').length;
+    const failed   = tasks.filter(t => t.last_result_code !== 0 && t.last_result_code !== 267009 && t.last_result_code !== 267011).length;
+    const healthy  = tasks.filter(t => healthScore(t) === 'good').length;
+    const warning  = tasks.filter(t => healthScore(t) === 'warning').length;
+    const bad      = tasks.filter(t => healthScore(t) === 'bad').length;
+    const upcoming = [...tasks]
+      .filter(t => t.next_run && t.next_run !== 'Never' && t.next_run !== 'N/A')
+      .sort((a, b) => a.next_run.localeCompare(b.next_run)).slice(0, 10);
+    const recentlyFailed = tasks
+      .filter(t => t.last_result_code !== 0 && t.last_result_code !== 267011 && t.last_result_code !== 267009)
+      .sort((a, b) => b.last_run.localeCompare(a.last_run)).slice(0, 5);
+    const healthPct = total > 0 ? Math.round((ready / total) * 100) : 0;
+
+    content.innerHTML = `
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-icon">All</div><div class="stat-val">${total}</div><div class="stat-lbl">Total Tasks</div></div>
+        <div class="stat-card running"><div class="stat-icon">Running</div><div class="stat-val">${running}</div><div class="stat-lbl">Running</div></div>
+        <div class="stat-card ready"><div class="stat-icon">Ready</div><div class="stat-val">${ready}</div><div class="stat-lbl">Ready</div></div>
+        <div class="stat-card disabled"><div class="stat-icon">Off</div><div class="stat-val">${disabled}</div><div class="stat-lbl">Disabled</div></div>
+        <div class="stat-card"><div class="stat-icon">Err</div><div class="stat-val" style="color:var(--red)">${failed}</div><div class="stat-lbl">Failed</div></div>
+      </div>
+      <div style="margin:10px 0 4px;font-size:11px;color:var(--text3)">System Health: ${healthPct}% Ready</div>
+      <div class="health-bar-wrap"><div class="health-bar" style="width:${healthPct}%"></div></div>
+      <div style="display:flex;gap:16px;margin:8px 0 16px;font-size:12px">
+        <span><span class="health-dot good"></span> ${healthy} Healthy</span>
+        <span><span class="health-dot warning"></span> ${warning} Warning</span>
+        <span><span class="health-dot bad"></span> ${bad} Failing</span>
+      </div>
+      <div class="dash-cols">
+        <div class="dash-card">
+          <div class="dash-card-title">Upcoming Tasks (Next 10)</div>
+          ${upcoming.length === 0
+            ? '<div style="padding:20px;text-align:center;color:var(--text2)">No upcoming scheduled tasks</div>'
+            : `<table class="detail-table" style="width:100%">
+                <thead><tr><th>Name</th><th>Next Run</th><th>Trigger</th></tr></thead>
+                <tbody>${upcoming.map(t => `
+                  <tr style="cursor:pointer" onclick="showPage('tasks')">
+                    <td>${escHtml(t.name)}</td>
+                    <td>${escHtml(t.next_run)}</td>
+                    <td>${escHtml((t.triggers||['-'])[0])}</td>
+                  </tr>`).join('')}
+                </tbody></table>`}
+        </div>
+        <div class="dash-card">
+          <div class="dash-card-title">Recently Failed</div>
+          ${recentlyFailed.length === 0
+            ? '<div style="padding:20px;text-align:center;color:var(--text2)">No failed tasks - all good!</div>'
+            : `<table class="detail-table" style="width:100%">
+                <thead><tr><th>Name</th><th>Last Run</th><th>Error</th></tr></thead>
+                <tbody>${recentlyFailed.map(t => `
+                  <tr>
+                    <td>${escHtml(t.name)}</td>
+                    <td>${escHtml(t.last_run)}</td>
+                    <td class="result-error">${escHtml(t.last_result)}</td>
+                  </tr>`).join('')}
+                </tbody></table>
+              <button class="btn" style="margin-top:8px" onclick="showPage('tasks')">View All</button>`}
+        </div>
+      </div>`;
+    setStatus('Loaded ' + total + ' total tasks');
+  } catch (err) {
+    const c = document.getElementById('dash-content');
+    if (c) c.innerHTML = `<div style="color:var(--red);padding:16px">Failed to load dashboard: ${escHtml(String(err))}</div>`;
+    setStatus('Error loading dashboard');
+    showToast('Dashboard error: ' + err, 'error');
+  }
+};

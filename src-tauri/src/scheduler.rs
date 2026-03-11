@@ -3,8 +3,9 @@
 use serde::{Deserialize, Serialize};
 use windows::{
     core::*,
-    Win32::Foundation::{VARIANT_FALSE, VARIANT_TRUE},
+    Win32::Foundation::{SYSTEMTIME, VARIANT_FALSE, VARIANT_TRUE},
     Win32::System::Com::*,
+    Win32::System::SystemInformation::GetSystemTime,
     Win32::System::TaskScheduler::*,
 };
 
@@ -85,6 +86,11 @@ fn days_to_ymd(days: i64) -> (i64, i64, i64) {
     (y, mo, d)
 }
 
+fn systemtime_to_str(st: &SYSTEMTIME) -> String {
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond)
+}
+
 // ── Public models ─────────────────────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskInfo {
@@ -104,6 +110,23 @@ pub struct TaskInfo {
     pub run_as_user:      String,
     pub hidden:           bool,
     pub enabled:          bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RunningTaskInfo {
+    pub name:           String,
+    pub path:           String,
+    pub current_action: String,
+    pub state:          String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskRunRecord {
+    pub start_time:    String,
+    pub end_time:      String,
+    pub result_code:   i32,
+    pub result_text:   String,
+    pub duration_secs: f64,
 }
 
 fn default_priority() -> u32 { 7 }
@@ -164,6 +187,8 @@ pub struct CreateTaskParams {
     pub disallow_on_batteries: bool,    // DisallowStartIfOnBatteries
     #[serde(default)]
     pub stop_on_batteries:    bool,     // StopIfGoingOnBatteries
+    #[serde(default)]
+    pub env_vars:             String,   // newline-separated KEY=VALUE pairs
 }
 
 // ── Engine ────────────────────────────────────────────────────────────────────
@@ -421,6 +446,7 @@ impl SchedulerEngine {
             "Idle"          => TASK_TRIGGER_IDLE,
             "SessionLock"   => TASK_TRIGGER_SESSION_STATE_CHANGE,
             "SessionUnlock" => TASK_TRIGGER_SESSION_STATE_CHANGE,
+            "Interval"      => TASK_TRIGGER_DAILY,  // maps to Daily + repetition
             _               => TASK_TRIGGER_DAILY,
         };
         let trigger = unsafe { trig_col.Create(ttype)? };
@@ -530,10 +556,29 @@ impl SchedulerEngine {
         let act_col = unsafe { defn.Actions()? };
         let action  = unsafe { act_col.Create(TASK_ACTION_EXEC)? };
         let exec: IExecAction = action.cast()?;
-        unsafe {
-            exec.SetPath(&BSTR::from(p.program_path.as_str()))?;
-            exec.SetArguments(&BSTR::from(p.arguments.as_str()))?;
-            exec.SetWorkingDirectory(&BSTR::from(p.working_dir.as_str()))?;
+
+        // If env_vars are set, wrap the command in cmd.exe with SET statements
+        if !p.env_vars.is_empty() {
+            let env_sets: String = p.env_vars.lines()
+                .filter(|l| l.contains('='))
+                .map(|l| format!("SET {} && ", l.trim()))
+                .collect();
+            let wrapped_args = format!("/c \"{}{}{}\"",
+                env_sets,
+                p.program_path,
+                if p.arguments.is_empty() { String::new() } else { format!(" {}", p.arguments) }
+            );
+            unsafe {
+                exec.SetPath(&BSTR::from("C:\\Windows\\System32\\cmd.exe"))?;
+                exec.SetArguments(&BSTR::from(wrapped_args.as_str()))?;
+                exec.SetWorkingDirectory(&BSTR::from(p.working_dir.as_str()))?;
+            }
+        } else {
+            unsafe {
+                exec.SetPath(&BSTR::from(p.program_path.as_str()))?;
+                exec.SetArguments(&BSTR::from(p.arguments.as_str()))?;
+                exec.SetWorkingDirectory(&BSTR::from(p.working_dir.as_str()))?;
+            }
         }
 
         let folder = unsafe { self.service.GetFolder(&BSTR::from(p.folder_path.as_str()))? };
@@ -557,9 +602,101 @@ impl SchedulerEngine {
         self.delete_task(task_path)?;
         self.create_task(p)
     }
+
+    // ── Running tasks ─────────────────────────────────────────────────────────
+    pub fn get_running_tasks(&self) -> Result<Vec<RunningTaskInfo>> {
+        let col = unsafe { self.service.GetRunningTasks(0)? };
+        let count = unsafe { read_i32(|p| col.Count(p)) };
+        let mut out = Vec::new();
+        for i in 1..=count {
+            let v = vi(i);
+            let rt = match unsafe { col.get_Item(&v) } {
+                Ok(t)  => t,
+                Err(_) => continue,
+            };
+            let name           = unsafe { read_bstr(|b| rt.Name(b)) };
+            let path           = unsafe { read_bstr(|b| rt.Path(b)) };
+            let current_action = unsafe { read_bstr(|b| rt.CurrentAction(b)) };
+            let mut state_val  = TASK_STATE::default();
+            unsafe { let _ = rt.State(&mut state_val); }
+            let (state, _) = task_state_str(state_val);
+            out.push(RunningTaskInfo { name, path, current_action, state });
+        }
+        Ok(out)
+    }
+
+    // ── Task run history (scheduled run times in a 90-day window) ─────────────
+    pub fn get_task_history(&self, task_path: &str, max_records: u32) -> Result<Vec<TaskRunRecord>> {
+        let (fp, tn) = split_path(task_path);
+        let folder = match unsafe { self.service.GetFolder(&BSTR::from(fp)) } {
+            Ok(f)  => f,
+            Err(_) => return Ok(vec![]),
+        };
+        let task = match unsafe { folder.GetTask(&BSTR::from(tn)) } {
+            Ok(t)  => t,
+            Err(_) => return Ok(vec![]),
+        };
+
+        // Build a 90-day window: start = 90 days ago (simplified via month math),
+        // end = very far future so we capture all recent scheduled runs.
+        let mut end_st = SYSTEMTIME::default();
+        unsafe { GetSystemTime(&mut end_st); }
+
+        let mut start_st = end_st;
+        // Subtract ~3 months (approximation of 90 days)
+        if start_st.wMonth <= 3 {
+            start_st.wYear  = start_st.wYear.saturating_sub(1);
+            start_st.wMonth = start_st.wMonth + 9; // wrap around
+        } else {
+            start_st.wMonth -= 3;
+        }
+
+        let limit = max_records.min(100);
+        let mut count: u32 = limit;
+        let mut times: *mut SYSTEMTIME = std::ptr::null_mut();
+
+        let ok = unsafe { task.GetRunTimes(&start_st, &end_st, &mut count, &mut times) };
+        if ok.is_err() || times.is_null() || count == 0 {
+            return Ok(vec![]); // graceful fallback (history may be disabled)
+        }
+
+        let mut records = Vec::new();
+        for i in 0..(count as usize) {
+            let st = unsafe { &*times.add(i) };
+            records.push(TaskRunRecord {
+                start_time:    systemtime_to_str(st),
+                end_time:      String::new(),
+                result_code:   0,
+                result_text:   "Scheduled run".to_string(),
+                duration_secs: 0.0,
+            });
+        }
+
+        // Free COM-allocated memory
+        unsafe { CoTaskMemFree(Some(times as *mut _)); }
+
+        Ok(records)
+    }
+
+    // ── Folder management ─────────────────────────────────────────────────────
+    pub fn create_folder(&self, path: &str) -> Result<()> {
+        // path should be absolute like \Folder or \Parent\Sub
+        let (parent_path, folder_name) = split_path(path);
+        let parent = unsafe { self.service.GetFolder(&BSTR::from(parent_path))? };
+        let v = VARIANT::default();
+        unsafe { parent.CreateFolder(&BSTR::from(folder_name), &v)? };
+        Ok(())
+    }
+
+    pub fn delete_folder(&self, path: &str) -> Result<()> {
+        let (parent_path, folder_name) = split_path(path);
+        let parent = unsafe { self.service.GetFolder(&BSTR::from(parent_path))? };
+        unsafe { parent.DeleteFolder(&BSTR::from(folder_name), 0)? };
+        Ok(())
+    }
 }
 
-// ── Utility ─────────────────────���─────────────────────────────────────────────
+// ── Utility ───────────────────────────────────────────────────────────────────
 fn split_path(path: &str) -> (&str, &str) {
     match path.rfind('\\') {
         Some(i) if i > 0 => (&path[..i], &path[i + 1..]),

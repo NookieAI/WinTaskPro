@@ -12,7 +12,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri      = { version = "2", features = ["wry"] }
+tauri      = { version = "2", features = ["wry", "tray-icon"] }
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -25,6 +25,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Ole",
     "Win32_System_Variant",
     "Win32_System_Threading",
+    "Win32_System_SystemInformation",
 ] }
 
 [profile.dev]
