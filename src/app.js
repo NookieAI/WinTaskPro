@@ -789,6 +789,7 @@ async function openCreateDialog(prefill = {}) {
       <div class="form-group">
         <label>Run As User</label>
         <input type="text" id="cf-run-as-user" class="form-control" value="${escHtml(prefill.run_as_user || '')}" placeholder="SYSTEM or leave blank for current user" />
+        <div class="form-hint">Leave blank to run as the current user. For service accounts enter: SYSTEM, NT AUTHORITY\\NetworkService, etc. Regular user names are not supported by the Task Scheduler API without a password.</div>
       </div>
       <div class="form-group">
         <div class="checkbox-group">
