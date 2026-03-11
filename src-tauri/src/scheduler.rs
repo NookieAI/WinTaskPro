@@ -870,8 +870,7 @@ impl SchedulerEngine {
             let name           = unsafe { rt.Name().map(|s| s.to_string()).unwrap_or_default() };
             let path           = unsafe { rt.Path().map(|s| s.to_string()).unwrap_or_default() };
             let current_action = unsafe { rt.CurrentAction().map(|s| s.to_string()).unwrap_or_default() };
-            let mut state_val  = TASK_STATE::default();
-            unsafe { let _ = rt.State(&mut state_val); }
+            let state_val      = unsafe { rt.State().unwrap_or_default() };
             let (state, _) = task_state_str(state_val);
             out.push(RunningTaskInfo { name, path, current_action, state });
         }
