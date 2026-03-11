@@ -15,10 +15,13 @@ let _editTaskPath  = null;  // non-null when editing an existing task
 // Live Monitor
 let liveRefreshInterval = null;
 
-// Audit log (max 500 entries, stored in localStorage)
+// Audit log (max MAX_AUDIT_LOG_ENTRIES entries, stored in localStorage)
+const MAX_AUDIT_LOG_ENTRIES = 500;
 let _auditLog = [];
 
 // Task failure detection for notifications
+const TASK_RESULT_RUNNING  = 267009;
+const TASK_RESULT_NOT_RUN  = 267011;
 let _prevTaskResults = {};
 
 // Bulk operations
@@ -33,6 +36,13 @@ let _colPrefs = {
 
 // Debounce timer for search input
 let searchDebounce = null;
+
+// Create dialog tab indices
+const TAB_GENERAL  = 0;
+const TAB_TRIGGER  = 1;
+const TAB_ACTION   = 2;
+const TAB_ADVANCED = 3;
+const TAB_XML      = 4;
 
 // ── Utility: status bar ───────────────────────────────────────────────────────
 function setStatus(msg) {
@@ -641,8 +651,8 @@ async function refreshAll() {
     allTasks.forEach(task => {
       const prev = _prevTaskResults[task.path];
       const code = task.last_result_code;
-      // Non-zero, non-running (267009), non-never-run (267011) = failure
-      if (prev !== undefined && prev !== code && code !== 0 && code !== 267009 && code !== 267011) {
+      // Non-zero, non-running, non-never-run = failure
+      if (prev !== undefined && prev !== code && code !== 0 && code !== TASK_RESULT_RUNNING && code !== TASK_RESULT_NOT_RUN) {
         if (Notification.permission === 'granted') {
           new Notification('WinTaskPro — Task Failed', {
             body: task.name + ' failed with ' + task.last_result,
@@ -1173,15 +1183,15 @@ function updateCreateTabUI() {
   const prevBtn   = document.getElementById('tab-prev-btn');
   const nextBtn   = document.getElementById('tab-next-btn');
   const submitBtn = document.getElementById('create-submit-btn');
-  if (prevBtn)   prevBtn.style.display   = _createTabIdx > 0       ? '' : 'none';
-  if (nextBtn)   nextBtn.style.display   = _createTabIdx < 4       ? '' : 'none';
-  if (submitBtn) submitBtn.style.display = (_createTabIdx === 3 || _createTabIdx === 4) ? '' : 'none';
+  if (prevBtn)   prevBtn.style.display   = _createTabIdx > 0          ? '' : 'none';
+  if (nextBtn)   nextBtn.style.display   = _createTabIdx < TAB_XML    ? '' : 'none';
+  if (submitBtn) submitBtn.style.display = (_createTabIdx === TAB_ADVANCED || _createTabIdx === TAB_XML) ? '' : 'none';
 }
 
 // Move to next (+1) or previous (-1) tab
 function createTabNav(delta) {
-  _createTabIdx = Math.max(0, Math.min(4, _createTabIdx + delta));
-  if (_createTabIdx === 4) generateXmlPreview();
+  _createTabIdx = Math.max(0, Math.min(TAB_XML, _createTabIdx + delta));
+  if (_createTabIdx === TAB_XML) generateXmlPreview();
   updateCreateTabUI();
 }
 
@@ -1362,7 +1372,7 @@ async function submitCreateTask() {
   if (nameInvalid) {
     if (nameEl) { const g = nameEl.closest('.form-group'); if (g) g.classList.add('has-error'); }
     valid = false;
-    if (_createTabIdx !== 0) { _createTabIdx = 0; updateCreateTabUI(); }
+    if (_createTabIdx !== TAB_GENERAL) { _createTabIdx = TAB_GENERAL; updateCreateTabUI(); }
   } else {
     if (nameEl) { const g = nameEl.closest('.form-group'); if (g) g.classList.remove('has-error'); }
   }
@@ -1378,7 +1388,7 @@ async function submitCreateTask() {
       const dt = (document.getElementById('cf-datetime') || {}).value || '';
       if (!dt) {
         markErr('cf-datetime', true);
-        if (_createTabIdx !== 1) { _createTabIdx = 1; updateCreateTabUI(); }
+        if (_createTabIdx !== TAB_TRIGGER) { _createTabIdx = TAB_TRIGGER; updateCreateTabUI(); }
       } else {
         start_datetime = dt.includes('T') ? (dt.length === 16 ? dt + ':00' : dt) : `${today}T${fmtTime(dt)}`;
         markErr('cf-datetime', false);
@@ -1389,7 +1399,7 @@ async function submitCreateTask() {
       const t = (document.getElementById('cf-daily-time') || {}).value || '';
       if (!t) {
         markErr('cf-daily-time', true);
-        if (_createTabIdx !== 1) { _createTabIdx = 1; updateCreateTabUI(); }
+        if (_createTabIdx !== TAB_TRIGGER) { _createTabIdx = TAB_TRIGGER; updateCreateTabUI(); }
       } else {
         start_datetime = `${today}T${fmtTime(t)}`;
         markErr('cf-daily-time', false);
@@ -1440,7 +1450,7 @@ async function submitCreateTask() {
     case 'batch': {
       if (!scriptPath) {
         markErr('cf-script-path', true);
-        if (_createTabIdx !== 2) { _createTabIdx = 2; updateCreateTabUI(); }
+        if (_createTabIdx !== TAB_ACTION) { _createTabIdx = TAB_ACTION; updateCreateTabUI(); }
       } else {
         program_path  = 'C:\\Windows\\System32\\cmd.exe';
         arguments_str = '/c "' + scriptPath + '"' + (extraArgs ? ' ' + extraArgs : '');
@@ -1451,7 +1461,7 @@ async function submitCreateTask() {
     case 'powershell': {
       if (!scriptPath) {
         markErr('cf-script-path', true);
-        if (_createTabIdx !== 2) { _createTabIdx = 2; updateCreateTabUI(); }
+        if (_createTabIdx !== TAB_ACTION) { _createTabIdx = TAB_ACTION; updateCreateTabUI(); }
       } else {
         program_path  = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
         arguments_str = '-NonInteractive -ExecutionPolicy Bypass -File "' + scriptPath + '"' + (extraArgs ? ' ' + extraArgs : '');
@@ -1462,7 +1472,7 @@ async function submitCreateTask() {
     case 'python': {
       if (!scriptPath) {
         markErr('cf-script-path', true);
-        if (_createTabIdx !== 2) { _createTabIdx = 2; updateCreateTabUI(); }
+        if (_createTabIdx !== TAB_ACTION) { _createTabIdx = TAB_ACTION; updateCreateTabUI(); }
       } else {
         program_path  = 'python.exe';
         arguments_str = '"' + scriptPath + '"' + (extraArgs ? ' ' + extraArgs : '');
@@ -1473,7 +1483,7 @@ async function submitCreateTask() {
     case 'vbscript': {
       if (!scriptPath) {
         markErr('cf-script-path', true);
-        if (_createTabIdx !== 2) { _createTabIdx = 2; updateCreateTabUI(); }
+        if (_createTabIdx !== TAB_ACTION) { _createTabIdx = TAB_ACTION; updateCreateTabUI(); }
       } else {
         program_path  = 'C:\\Windows\\System32\\wscript.exe';
         arguments_str = '"' + scriptPath + '"' + (extraArgs ? ' ' + extraArgs : '');
@@ -1488,7 +1498,7 @@ async function submitCreateTask() {
       arguments_str = (document.getElementById('cf-args')    || {}).value.trim() || '';
       if (!program_path) {
         markErr('cf-program', true);
-        if (_createTabIdx !== 2) { _createTabIdx = 2; updateCreateTabUI(); }
+        if (_createTabIdx !== TAB_ACTION) { _createTabIdx = TAB_ACTION; updateCreateTabUI(); }
       } else {
         markErr('cf-program', false);
       }
@@ -2140,7 +2150,7 @@ document.addEventListener('DOMContentLoaded', init);
 // ── Health scoring ────────────────────────────────────────────────────────────
 function healthScore(task) {
   const code = task.last_result_code;
-  if (code !== 0 && code !== 267009 && code !== 267011) return 'bad';
+  if (code !== 0 && code !== TASK_RESULT_RUNNING && code !== TASK_RESULT_NOT_RUN) return 'bad';
   if (task.last_result === 'Not Run Yet' || !task.enabled) return 'warning';
   return 'good';
 }
@@ -2397,7 +2407,7 @@ async function renderLiveMonitor() {
 // ── Audit log ─────────────────────────────────────────────────────────────────
 function appendAuditLog(action, target, detail) {
   _auditLog.unshift({ ts: new Date().toISOString(), action, target, detail: detail || '' });
-  if (_auditLog.length > 500) _auditLog.length = 500;
+  if (_auditLog.length > MAX_AUDIT_LOG_ENTRIES) _auditLog.length = MAX_AUDIT_LOG_ENTRIES;
   try { localStorage.setItem('wtp_auditLog', JSON.stringify(_auditLog)); } catch (_) {}
 }
 
@@ -2738,7 +2748,7 @@ loadDashboard = async function() {
     const running  = tasks.filter(t => t.status === 'Running').length;
     const ready    = tasks.filter(t => t.status === 'Ready').length;
     const disabled = tasks.filter(t => t.status === 'Disabled').length;
-    const failed   = tasks.filter(t => t.last_result_code !== 0 && t.last_result_code !== 267009 && t.last_result_code !== 267011).length;
+    const failed   = tasks.filter(t => t.last_result_code !== 0 && t.last_result_code !== TASK_RESULT_RUNNING && t.last_result_code !== TASK_RESULT_NOT_RUN).length;
     const healthy  = tasks.filter(t => healthScore(t) === 'good').length;
     const warning  = tasks.filter(t => healthScore(t) === 'warning').length;
     const bad      = tasks.filter(t => healthScore(t) === 'bad').length;
@@ -2746,7 +2756,7 @@ loadDashboard = async function() {
       .filter(t => t.next_run && t.next_run !== 'Never' && t.next_run !== 'N/A')
       .sort((a, b) => a.next_run.localeCompare(b.next_run)).slice(0, 10);
     const recentlyFailed = tasks
-      .filter(t => t.last_result_code !== 0 && t.last_result_code !== 267011 && t.last_result_code !== 267009)
+      .filter(t => t.last_result_code !== 0 && t.last_result_code !== TASK_RESULT_NOT_RUN && t.last_result_code !== TASK_RESULT_RUNNING)
       .sort((a, b) => b.last_run.localeCompare(a.last_run)).slice(0, 5);
     const healthPct = total > 0 ? Math.round((ready / total) * 100) : 0;
 
