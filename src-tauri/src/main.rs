@@ -60,6 +60,9 @@ fn get_all_tasks(state: State<AppState>) -> Result<Vec<TaskInfo>, String> {
     };
     let folders = engine.get_folders().map_err(|e| e.to_string())?;
     let mut all: Vec<TaskInfo> = Vec::new();
+    // Iterate folders sequentially: COM STA (Single-Threaded Apartment) requires
+    // that all COM calls occur on the same thread that called CoInitializeEx.
+    // Spawning threads here would violate the STA contract.
     for f in &folders {
         if let Ok(tasks) = engine.get_tasks(f) {
             all.extend(tasks);
