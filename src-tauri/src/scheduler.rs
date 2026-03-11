@@ -834,8 +834,30 @@ impl SchedulerEngine {
             }
         }
 
-        let folder = unsafe { self.service.GetFolder(&BSTR::from(p.folder_path.as_str()))? };
-        let logon  = if p.run_as_user.is_empty() { TASK_LOGON_INTERACTIVE_TOKEN } else { TASK_LOGON_S4U };
+        // Choose logon type based on run_as_user:
+        // - Empty, SYSTEM, or NT AUTHORITY/SERVICE accounts → SERVICE_ACCOUNT
+        // - Any other named user (including the current interactive user) → INTERACTIVE_TOKEN
+        //   Using TASK_LOGON_S4U for regular user accounts requires special privileges and
+        //   causes 0x80070005 (Access Denied) when the user is not a group-managed service account.
+        let run_as = p.run_as_user.trim();
+        let u_upper = run_as.to_ascii_uppercase();
+        let is_service = run_as.is_empty()
+            || u_upper == "SYSTEM"
+            || u_upper.starts_with("NT AUTHORITY\\")
+            || u_upper.starts_with("NT SERVICE\\");
+
+        let logon = if is_service {
+            TASK_LOGON_SERVICE_ACCOUNT
+        } else {
+            TASK_LOGON_INTERACTIVE_TOKEN
+        };
+
+        // Normalise folder_path: treat empty or root as "\\"
+        let folder_path = {
+            let fp = p.folder_path.trim();
+            if fp.is_empty() { "\\".to_string() } else { fp.to_string() }
+        };
+        let folder = unsafe { self.service.GetFolder(&BSTR::from(folder_path.as_str()))? };
         let v = VARIANT::default();
         unsafe {
             folder.RegisterTaskDefinition(
