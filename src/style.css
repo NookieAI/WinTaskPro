@@ -309,11 +309,11 @@ html, body {
   table-layout: fixed;
 }
 #task-table colgroup col:nth-child(1) { width: 22%; }
-#task-table colgroup col:nth-child(2) { width: 8%; }
+#task-table colgroup col:nth-child(2) { width: 28%; }
 #task-table colgroup col:nth-child(3) { width: 9%; }
-#task-table colgroup col:nth-child(4) { width: 20%; }
-#task-table colgroup col:nth-child(5) { width: 12%; }
-#task-table colgroup col:nth-child(6) { width: 12%; }
+#task-table colgroup col:nth-child(4) { width: 14%; }
+#task-table colgroup col:nth-child(5) { width: 9%; }
+#task-table colgroup col:nth-child(6) { width: 9%; }
 #task-table colgroup col:nth-child(7) { width: 10%; }
 #task-table colgroup col:nth-child(8) { width: 7%; }
 

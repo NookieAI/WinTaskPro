@@ -363,6 +363,102 @@ fn is_admin() -> bool {
     }
 }
 
+// ── File / folder browse dialogs (Windows-native) ─────────────────────────────
+
+#[tauri::command]
+#[cfg(windows)]
+fn browse_for_file(filter: String) -> Result<String, String> {
+    use windows::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, OPENFILENAMEW, OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST,
+    };
+    use windows::core::PCWSTR;
+
+    // Build a double-NUL-terminated filter string.
+    // If the caller passes a non-empty filter we use it; otherwise fall back to
+    // "All Files (*.*)" so the dialog is always useful.
+    let raw_filter: Vec<u16> = if filter.is_empty() {
+        "All Files (*.*)\0*.*\0\0".encode_utf16().collect()
+    } else {
+        // Ensure the filter string ends with exactly two NUL characters.
+        let mut v: Vec<u16> = filter.encode_utf16().collect();
+        // Strip any trailing NULs the caller may have already added.
+        while v.last().copied() == Some(0) { v.pop(); }
+        // Append the required double-NUL terminator.
+        v.push(0);
+        v.push(0);
+        v
+    };
+
+    let mut file_buf: Vec<u16> = vec![0u16; 32768]; // ample buffer for long paths
+
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        lpstrFilter: PCWSTR(raw_filter.as_ptr()),
+        nFilterIndex: 1,
+        lpstrFile: windows::core::PWSTR(file_buf.as_mut_ptr()),
+        nMaxFile: file_buf.len() as u32,
+        Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST,
+        ..Default::default()
+    };
+
+    let ok = unsafe { GetOpenFileNameW(&mut ofn).as_bool() };
+    if ok {
+        let end = file_buf.iter().position(|&c| c == 0).unwrap_or(file_buf.len());
+        Ok(String::from_utf16_lossy(&file_buf[..end]))
+    } else {
+        Err("cancelled".into())
+    }
+}
+
+#[tauri::command]
+#[cfg(not(windows))]
+fn browse_for_file(_filter: String) -> Result<String, String> {
+    Err("Windows only".into())
+}
+
+#[tauri::command]
+#[cfg(windows)]
+fn browse_for_folder() -> Result<String, String> {
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH, FOS_PICKFOLDERS,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+    };
+
+    unsafe {
+        // Initialize COM on this thread (ignore errors — may already be initialized).
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_ALL)
+                .map_err(|e| e.to_string())?;
+
+        // Set options to pick a folder instead of a file.
+        let mut options = dialog.GetOptions().map_err(|e| e.to_string())?;
+        options |= FOS_PICKFOLDERS;
+        dialog.SetOptions(options).map_err(|e| e.to_string())?;
+
+        if dialog.Show(None).is_err() {
+            return Err("cancelled".into());
+        }
+
+        let item = dialog.GetResult().map_err(|e| e.to_string())?;
+        let pwstr = item
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .map_err(|e| e.to_string())?;
+        // PWSTR::to_string() converts a wide string to a Rust String.
+        let path = pwstr.to_string().map_err(|_| "Failed to convert folder path to string".to_string())?;
+        Ok(path)
+    }
+}
+
+#[tauri::command]
+#[cfg(not(windows))]
+fn browse_for_folder() -> Result<String, String> {
+    Err("Windows only".into())
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
@@ -444,6 +540,8 @@ fn main() {
             is_admin,
             check_for_update,
             install_update,
+            browse_for_file,
+            browse_for_folder,
         ])
         .run(tauri::generate_context!())
         .expect("Error running WinTaskPro");

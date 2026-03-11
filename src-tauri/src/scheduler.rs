@@ -648,6 +648,16 @@ impl SchedulerEngine {
 
     // ── Create ────────────────────────────────────────────────────────────────
     pub fn create_task(&self, p: &CreateTaskParams) -> Result<()> {
+        // Validate task name: Windows Task Scheduler forbids these characters.
+        if p.name.chars().any(|c| matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+            || p.name.trim().is_empty()
+        {
+            return Err(windows::core::Error::new(
+                windows::core::HRESULT(0x80070057u32 as i32),
+                "Task name contains invalid characters (cannot use \\ / : * ? \" < > |)".into(),
+            ));
+        }
+
         let defn: ITaskDefinition = unsafe { self.service.NewTask(0)? };
 
         let reg = unsafe { defn.RegistrationInfo()? };

@@ -769,7 +769,7 @@ async function openCreateDialog(prefill = {}) {
       <div class="form-group">
         <label>Task Name *</label>
         <input type="text" id="cf-name" class="form-control" value="${escHtml(prefill.name || '')}" placeholder="MyBackupTask" />
-        <div class="form-error" id="err-name">Name is required and cannot contain slashes</div>
+        <div class="form-error" id="err-name">Name is required and cannot contain: \ / : * ? " &lt; &gt; |</div>
       </div>
       <div class="form-group">
         <label>Folder</label>
@@ -947,7 +947,10 @@ async function openCreateDialog(prefill = {}) {
       <div id="af-script-group" style="display:none">
         <div class="form-group">
           <label>Script Path *</label>
-          <input type="text" id="cf-script-path" class="form-control" placeholder="C:\\Scripts\\myjob.bat" />
+          <div style="display:flex;gap:6px;align-items:center">
+            <input type="text" id="cf-script-path" class="form-control" placeholder="C:\\Scripts\\myjob.bat" style="flex:1" />
+            <button class="btn" type="button" id="browse-script-btn" title="Browse for file">📂</button>
+          </div>
           <div class="form-hint" id="af-path-hint">Tip: Use the full absolute path to your script. Network paths (\\\\server\\share\\script.bat) are also supported.</div>
           <div class="form-error" id="err-script-path">Script path is required</div>
         </div>
@@ -964,7 +967,10 @@ async function openCreateDialog(prefill = {}) {
       <div id="af-program-group">
         <div class="form-group">
           <label>Program Path *</label>
-          <input type="text" id="cf-program" class="form-control" value="${escHtml(prefill.program || '')}" placeholder="C:\\Windows\\System32\\notepad.exe" />
+          <div style="display:flex;gap:6px;align-items:center">
+            <input type="text" id="cf-program" class="form-control" value="${escHtml(prefill.program || '')}" placeholder="C:\\Windows\\System32\\notepad.exe" style="flex:1" />
+            <button class="btn" type="button" id="browse-program-btn" title="Browse for file">📂</button>
+          </div>
           <div class="form-error" id="err-program">Program path is required</div>
         </div>
         <div class="form-group">
@@ -976,7 +982,10 @@ async function openCreateDialog(prefill = {}) {
       <!-- Working directory (always shown) -->
       <div class="form-group">
         <label>Working Directory <span style="font-weight:400;text-transform:none;color:var(--text3)">(optional)</span></label>
-        <input type="text" id="cf-workdir" class="form-control" value="${escHtml(prefill.working_dir || '')}" placeholder="C:\\Scripts" />
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="text" id="cf-workdir" class="form-control" value="${escHtml(prefill.working_dir || '')}" placeholder="C:\\Scripts" style="flex:1" />
+          <button class="btn" type="button" id="browse-workdir-btn" title="Browse for folder">📂</button>
+        </div>
       </div>
 
       <!-- Environment variables section -->
@@ -1229,6 +1238,31 @@ async function openCreateDialog(prefill = {}) {
       if (_createTabIdx === TAB_XML) generateXmlPreview(); // auto-refresh XML tab
       updateCreateTabUI();
     });
+  });
+
+  // Wire up browse buttons for path inputs (after modal is in the DOM)
+  requestAnimationFrame(() => {
+    const browseScript = document.getElementById('browse-script-btn');
+    if (browseScript) browseScript.onclick = async () => {
+      try {
+        const path = await invoke('browse_for_file', { filter: '' });
+        if (path) { const el = document.getElementById('cf-script-path'); if (el) el.value = path; }
+      } catch (_) { /* cancelled or error — ignore */ }
+    };
+    const browseProgram = document.getElementById('browse-program-btn');
+    if (browseProgram) browseProgram.onclick = async () => {
+      try {
+        const path = await invoke('browse_for_file', { filter: '' });
+        if (path) { const el = document.getElementById('cf-program'); if (el) el.value = path; }
+      } catch (_) { /* cancelled */ }
+    };
+    const browseWorkdir = document.getElementById('browse-workdir-btn');
+    if (browseWorkdir) browseWorkdir.onclick = async () => {
+      try {
+        const path = await invoke('browse_for_folder');
+        if (path) { const el = document.getElementById('cf-workdir'); if (el) el.value = path; }
+      } catch (_) { /* cancelled */ }
+    };
   });
 }
 
@@ -1600,7 +1634,7 @@ async function submitCreateTask() {
     if (condition) valid = false;
   }
 
-  const nameInvalid = !name || name.includes('/') || name.includes('\\');
+  const nameInvalid = !name || /[\/\\:*?"<>|]/.test(name);
   if (nameInvalid) {
     if (nameEl) { const g = nameEl.closest('.form-group'); if (g) g.classList.add('has-error'); }
     valid = false;
@@ -1742,6 +1776,15 @@ async function submitCreateTask() {
 
   if (!valid) {
     showToast('Please fix the highlighted errors', 'error');
+    return;
+  }
+
+  // ── Guard: time-based triggers require a valid start_datetime ───────────────
+  const timeBased = ['Once', 'Daily', 'Weekly', 'Monthly', 'Interval'].includes(trigger_type);
+  if (timeBased && !start_datetime) {
+    showToast('Please set a valid start date/time for this trigger type', 'error');
+    _createTabIdx = TAB_TRIGGER;
+    updateCreateTabUI();
     return;
   }
 
