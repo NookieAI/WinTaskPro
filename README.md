@@ -66,20 +66,6 @@ Download the standalone `WinTaskPro.exe` from the release assets. No installatio
 
 ---
 
-## Auto-Update Setup (for maintainers publishing releases)
-
-See **[UPDATER.md](UPDATER.md)** for the complete guide. In brief:
-
-1. **Generate a signing key pair** — `npx @tauri-apps/cli signer generate -w ~/.tauri/wintaskpro.key`
-2. **Add the public key** to `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`
-3. **Add the private key** as a GitHub Actions secret named `TAURI_SIGNING_PRIVATE_KEY`
-4. **Bump the version** in `Cargo.toml` and `tauri.conf.json` (both must match)
-5. **Push a tag** — `git tag v1.1.0 && git push origin main --tags`
-
-The workflow at `.github/workflows/release.yml` handles building, signing, creating the GitHub Release, and uploading `latest.json` automatically.
-
----
-
 ## Keyboard Shortcuts
 
 | Key | Action |
