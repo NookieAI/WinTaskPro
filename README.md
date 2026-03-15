@@ -6,7 +6,7 @@ Support: https://ko-fi.com/nookie_65120 :heart:
 
 # WinTaskPro
 
-**A modern Windows Task Scheduler manager built with Tauri + Rust**
+**A modern, advanced Windows Task Scheduler manager built with Tauri + Rust**
 
 [![Release](https://img.shields.io/github/v/release/NookieAI/WinTaskPro?style=flat-square)](https://github.com/NookieAI/WinTaskPro/releases/latest)
 [![License](https://img.shields.io/github/license/NookieAI/WinTaskPro?style=flat-square)](LICENSE)
