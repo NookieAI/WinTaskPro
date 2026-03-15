@@ -1,3 +1,5 @@
+Support: https://ko-fi.com/nookie_65120 :heart:
+
 <div align="center">
 
 <img src="src/icon.png" width="80" alt="WinTaskPro icon" />
