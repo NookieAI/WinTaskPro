@@ -53,53 +53,14 @@ Built with **Tauri v2** (Rust backend) and a plain HTML/CSS/JS frontend, it talk
 ### Download the installer (recommended)
 
 1. Go to [**Releases**](https://github.com/NookieAI/WinTaskPro/releases/latest)
-2. Download `WinTaskPro_x.x.x_x64-setup.exe`
-3. Run the installer — Windows may prompt for administrator rights
-4. Launch WinTaskPro from the Start Menu or the Desktop shortcut
+2. Download `WinTaskPro.exe`
+3. Launch WinTaskPro from the standalone executable.
 
 > **Always run as Administrator.** Right-click the shortcut → *Run as administrator*. To make this permanent: right-click the shortcut → Properties → Advanced → tick *Run as administrator*.
 
 ### Portable build
 
 Download the standalone `WinTaskPro.exe` from the release assets. No installation needed — just run it directly (still requires admin rights).
-
----
-
-## Building from Source
-
-### Prerequisites
-
-```powershell
-# Rust
-winget install Rustlang.Rustup
-rustup update stable
-rustup target add x86_64-pc-windows-msvc
-
-# Node.js
-winget install OpenJS.NodeJS.LTS
-
-# Tauri CLI
-npm install -g @tauri-apps/cli
-```
-
-### Build
-
-```powershell
-git clone https://github.com/NookieAI/WinTaskPro.git
-cd WinTaskPro
-npm install
-npm run build
-```
-
-The NSIS installer will be written to `src-tauri/target/release/bundle/nsis/`.
-
-### Development mode
-
-```powershell
-npm run dev
-```
-
-Starts a local HTTP server for the frontend and launches the app. The Rust backend recompiles automatically on changes.
 
 ---
 
@@ -135,45 +96,3 @@ The workflow at `.github/workflows/release.yml` handles building, signing, creat
 | `5` | Go to Settings |
 
 ---
-
-## Project Structure
-
-```
-WinTaskPro/
-├── .github/
-│   └── workflows/
-│       └── release.yml         # CI: build → sign → publish on version tag
-├── src/                        # Frontend
-│   ├── index.html
-│   ├── app.js                  # All UI logic (~3,400 lines, no framework)
-│   └── style.css               # All styles (~600 lines, CSS variables throughout)
-├── src-tauri/                  # Rust backend
-│   ├── src/
-│   │   ├── main.rs             # Tauri command handlers + tray + app setup
-│   │   └── scheduler.rs        # Windows Task Scheduler COM API wrapper
-│   ├── capabilities/
-│   │   └── default.json        # Tauri capability permissions
-│   ├── Cargo.toml
-│   └── tauri.conf.json
-├── CHANGELOG.md
-├── README.md
-├── SETUP.md                    # Dev environment setup
-└── UPDATER.md                  # Auto-update configuration guide
-```
-
----
-
-## Contributing
-
-Issues and pull requests are welcome. Before opening a PR for a large change, please open an issue first to discuss the approach.
-
-**Bug reports should include:**
-- Your Windows version (run `winver`)
-- Whether you launched WinTaskPro as Administrator
-- The exact error message shown (open DevTools with `Ctrl+Shift+I` for console errors)
-
----
-
-## License
-
-MIT — see [LICENSE](LICENSE).
