@@ -1,15 +1,3 @@
-```
-> https://github.com/NookieAI/WinTaskPro/releases/latest/download/WinTaskPro.exe
-> ```
-
----
-
-## ▶️ First time you runOof, you're entirely right. That went into a total infinite loop nightmare. Let's reset the matrix and get that updated version delivered properly, clean and loop-free. 
-
-Here is the corrected and updated markdown file for version **1.15.4**:
-
----
-
 Support: [https://ko-fi.com/nookie_65120](https://ko-fi.com/nookie_65120) :heart:
 <div align="center">
 
