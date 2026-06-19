@@ -1,4 +1,3 @@
-Support: https://ko-fi.com/nookie_65120 :heart:
 <div align="center">
 
 <img src="src/icon.png" width="80" alt="WinTaskPro" />
@@ -31,8 +30,8 @@ Everything ships from the **[Releases page](https://github.com/NookieAI/WinTaskP
 | File | Use this if you want… |
 |---|---|
 | **`WinTaskPro.exe`** | **Just to run it.** Single portable file — desktop, USB stick, anywhere. No install. This is also the file the in-app updater downloads. |
-| **`WinTaskPro_1.15.2_x64-setup.exe`** | A Start-Menu shortcut. Standard installer, same program. |
-| **`WinTaskPro_1.15.2_x64_en-US.msi`** | Silent / managed deployment (IT admins). |
+| **`WinTaskPro_1.15.4_x64-setup.exe`** | A Start-Menu shortcut. Standard installer, same program. |
+| **`WinTaskPro_1.15.4_x64_en-US.msi`** | Silent / managed deployment (IT admins). |
 
 All three are the identical application. **Most people want `WinTaskPro.exe`** — download it and double-click.
 
@@ -93,8 +92,12 @@ At-a-glance health: how many tasks are running, ready, disabled, and failed righ
 The full list — every task, every folder.
 
 - **Click a row** for the detail panel · **Right-click** for quick actions
+- **★ Favorites** — pin the handful of tasks you actually care about; they float to the top and a **★ Favorites** filter shows only those
 - **Search** by name, trigger, or action · **🌐 All Folders** searches everything at once
+- **💾 Save Search** — keep a compound search/status/tag/favorites filter as a reusable chip
+- **🩺 Health** — scores every task 0–100 (failed runs, never-ran, disabled, no action) and lists what needs attention
 - **Status filter** and **stat pills** narrow instantly
+- **Fully keyboard-operable** — Tab reaches nav, pills, folders, rows and sortable headers (Enter/Space activates); modals trap focus and restore it on close; respects your OS "reduce motion" setting
 - **🕒 Timeline** — every run scheduled in the next 24 hours on a density chart
 - **🌙 Activity** — last-24-hour digest of starts, completions, failures
 - **Ctrl+K** — command palette to jump to any task, page, or action
@@ -180,4 +183,3 @@ App logs: `%LOCALAPPDATA%\WinTaskPro\logs\`. Your tags, notes, and audit log liv
 MIT — free to use, modify, and distribute. See [LICENSE](LICENSE).
 
 <div align="center"><sub>WinTaskPro · © 2026 NookieAI · <a href="https://github.com/NookieAI/WinTaskPro/releases">Releases</a></sub></div>
-

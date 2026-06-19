@@ -1,34 +1,85 @@
 [package]
 name = "wintaskpro"
-version = "1.0.0"
+version = "1.16.0"
 edition = "2021"
-default-run = "wintaskpro"
+default-run = "WinTaskPro"
 
+# Binary name is intentionally PascalCase — `WinTaskPro.exe` rather than the
+# lowercase `wintaskpro.exe` Cargo would derive from the package name. This
+# is a 1.14.2 normalization: every build path (cargo build, tauri build,
+# tauri build --no-bundle, build_portable.ps1, the CI workflow, the NSIS
+# installer payload) now produces a file literally named WinTaskPro.exe.
+# Previously the raw cargo output was wintaskpro.exe and we copied it to
+# WinTaskPro.exe in two separate downstream scripts — fragile and
+# inconsistent. Cargo allows mixed-case binary names via [[bin]].name even
+# though package names must stay snake_case/kebab-case.
 [[bin]]
-name = "wintaskpro"
+name = "WinTaskPro"
 path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# ── Dependency upgrade discipline ───────────────────────────────────────────
+# Past breakage: bumping `windows` (0.58 → 0.61) moved `VARIANT` out of
+# `windows::core::*`, breaking 12 call sites in scheduler.rs. Bumping
+# `sysinfo` (0.31 → 0.32) changed `cpu_arch()` from `String` to `Option<String>`,
+# breaking main.rs.  Lessons applied:
+#   1. Major-version-zero (0.x) crates are NOT semver-stable — every minor
+#      bump may break source-level API. Bump deliberately, never as a chore.
+#   2. After ANY bump in this file: `cd src-tauri && cargo build` must
+#      succeed from a clean state before the version is tagged.
+#   3. `Cargo.lock` is committed. CORRECTION (audit 2026-06-19): the release CI
+#      does NOT currently enforce `--locked` on the build — tauri-action and
+#      `build:portable` run without it, and the `cargo metadata --locked` step is
+#      `continue-on-error` (informational). So lockfile drift will NOT fail CI; a
+#      non-locked build silently rewrites Cargo.lock. Treat the committed
+#      Cargo.lock as source of truth and re-run `cargo build` after any bump.
+#      (To actually enforce: add `-- --locked` to the cargo build args and drop
+#      continue-on-error in .github/workflows/release.yml — do it once the lock
+#      is confirmed in sync to avoid breaking releases.)
+# ────────────────────────────────────────────────────────────────────────────
 tauri      = { version = "2", features = ["wry", "tray-icon"] }
-tauri-plugin-updater = "2"
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
+# CORRECTION (audit 2026-06-19): sysinfo 0.32 still depends on the `windows`
+# crate (0.57), NOT `windows-sys`. So Cargo.lock currently has TWO `windows`
+# versions — 0.57 (pulled only by sysinfo) and 0.61 (ours + tauri). This is a
+# known, accepted duplicate; it builds fine and is not worth a sysinfo bump.
+# Verify with: `cd src-tauri && cargo tree --duplicates`
+sysinfo    = { version = "0.32", default-features = false, features = ["system"] }
+# SHA-256 for the integrity-check feature (Phase 3). Default features include
+# the optimized x86 hardware-accelerated path — relevant for large executables.
+sha2       = "0.10"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
+# Bumped from 0.58 → 0.61 in 1.8.0 to match tauri's transitive windows version.
+# All Win32_* feature names are stable across this range.
+windows = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_TaskScheduler",
     "Win32_Security",
+    # Win32_Security_Authorization removed in 1.14.2 — was only used for
+    # ConvertSidToStringSidW in get_process_username's SID-string fallback,
+    # which was deleted to avoid the LocalFree path-vs-version uncertainty.
     "Win32_System_Ole",
     "Win32_System_Variant",
     "Win32_System_Threading",
     "Win32_System_SystemInformation",
+    "Win32_System_Time",
+    "Win32_System_Registry",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Diagnostics_ToolHelp",
+    # Win32_System_Memory removed in 1.14.2 — see note above; only LocalFree
+    # was used and the fallback path requiring it has been deleted.
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
     "Win32_UI_Controls_Dialogs",
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [profile.dev]

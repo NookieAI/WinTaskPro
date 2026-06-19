@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "dev",
+  "description": "Dev capability. NOTE (audit 2026-06-19): `local:true` selects the local app webview (vs remote URLs) — it does NOT exclude this capability from release builds. The devtools-toggle permission below is harmless in release only because the tauri `devtools` cargo feature is not enabled (so the binding is compiled out); to truly gate it, build-gate this file.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "core:webview:allow-internal-toggle-devtools"
+  ]
+}

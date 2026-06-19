@@ -1,10 +1,10 @@
 {
   "name": "wintaskpro",
-  "version": "1.0.0",
+  "version": "1.16.0",
   "scripts": {
-    "dev":            "tauri dev",
-    "serve":          "python -m http.server 1420 --directory src",
-    "build":          "tauri build",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
     "build:portable": "tauri build --no-bundle"
   },
   "devDependencies": {

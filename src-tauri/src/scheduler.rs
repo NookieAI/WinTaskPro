@@ -7,6 +7,12 @@ use windows::{
     Win32::System::Com::*,
     Win32::System::SystemInformation::GetSystemTime,
     Win32::System::TaskScheduler::*,
+    Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION},
+    // windows-rs 0.61 moved VARIANT out of `windows::core` to here.
+    // Under 0.58 it was re-exported from core::*, but that re-export was
+    // removed during the 0.59 reorganisation. The Win32_System_Variant
+    // feature is enabled in Cargo.toml so this import resolves.
+    Win32::System::Variant::VARIANT,
 };
 
 // ── VARIANT_BOOL helper ───────────────────────────────────────────────────────
@@ -54,7 +60,7 @@ fn trigger_str(t: TASK_TRIGGER_TYPE2) -> String {
 
 fn fmt_code(code: i32) -> String {
     match code {
-        0      => "Success (0)".into(),
+        0      => "Success".into(),
         267009 => "Still Running".into(),
         267011 => "Not Run Yet".into(),
         _      => format!("Error (0x{:08X})", code as u32),
@@ -63,13 +69,39 @@ fn fmt_code(code: i32) -> String {
 
 fn ole_date(d: f64) -> String {
     if d < 1.0 { return "Never".into(); }
-    let secs = ((d - 25569.0) * 86400.0).round() as i64;
-    if secs < 0 { return "Never".into(); }
-    let s   = (secs % 60) as u32;
-    let m   = ((secs / 60) % 60) as u32;
-    let h   = ((secs / 3600) % 24) as u32;
-    let (y, mo, day) = days_to_ymd(secs / 86400);
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, day, h, m, s)
+    // OLE Automation date epoch is 1899-12-30 UTC.
+    // Convert to Unix timestamp then to local time using the system timezone offset.
+    let secs_utc = ((d - 25569.0) * 86400.0).round() as i64;
+    if secs_utc < 0 { return "Never".into(); }
+
+    // Get the local timezone offset in seconds from the Windows API
+    let tz_offset_secs: i64 = unsafe {
+        let mut tzi = TIME_ZONE_INFORMATION::default();
+        let result = GetTimeZoneInformation(&mut tzi);
+        // GetTimeZoneInformation returns a plain u32 in windows-rs 0.58.
+        // 2 = TIME_ZONE_ID_DAYLIGHT — add DaylightBias; otherwise use Bias only.
+        let bias_mins = if result == 2 {
+            tzi.Bias + tzi.DaylightBias
+        } else {
+            tzi.Bias
+        };
+        -(bias_mins as i64) * 60
+    };
+
+    let secs_local = secs_utc + tz_offset_secs;
+    if secs_local < 0 { return "Never".into(); }
+
+    let s   = (secs_local % 60) as u32;
+    let m   = ((secs_local / 60) % 60) as u32;
+    let h   = ((secs_local / 3600) % 24) as u32;
+    let (y, mo, day) = days_to_ymd(secs_local / 86400);
+
+    // Show offset so user knows what timezone the time is in
+    let off_h = tz_offset_secs.abs() / 3600;
+    let off_m = (tz_offset_secs.abs() % 3600) / 60;
+    let sign  = if tz_offset_secs >= 0 { '+' } else { '-' };
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} (UTC{}{}:{:02})",
+        y, mo, day, h, m, s, sign, off_h, off_m)
 }
 
 fn days_to_ymd(days: i64) -> (i64, i64, i64) {
@@ -105,6 +137,12 @@ pub struct TaskInfo {
     pub last_result_code: i32,
     pub triggers:         Vec<String>,
     pub actions:          Vec<String>,
+    // Total number of actions of ANY type (exec, email, show-message, COM
+    // handler). `actions` above only contains EXEC actions, so the frontend's
+    // "more than one action → route to the lossless XML editor" guard would
+    // miss a task with one exec + one non-exec action. This is the honest count.
+    #[serde(default)]
+    pub action_count:     u32,
     pub description:      String,
     pub author:           String,
     pub run_as_user:      String,
@@ -191,6 +229,96 @@ pub struct TaskRunRecord {
 
 fn default_priority() -> u32 { 7 }
 
+// ── Shared action helpers ─────────────────────────────────────────────────────
+
+/// Escape a value for use inside a cmd.exe double-quoted argument.
+/// Handles cmd special characters: & | < > ^ ( ) "
+fn escape_cmd_value(s: &str) -> String {
+    s.chars().map(|c| match c {
+        '&' | '|' | '<' | '>' | '^' | '(' | ')' | '"' => format!("^{c}"),
+        _ => c.to_string(),
+    }).collect()
+}
+
+/// Configure an IExecAction from CreateTaskParams.
+/// If env_vars are set, wraps the command in cmd.exe with a `SET` preamble.
+/// Called from both create_task and update_task to ensure consistency.
+///
+/// # Safety
+/// Caller must be inside an `unsafe` block; all inner COM calls are unsafe.
+unsafe fn build_exec_action(exec: &IExecAction, p: &CreateTaskParams) -> Result<()> {
+    if !p.env_vars.is_empty() {
+        // SECURITY (command-injection fix): the env-var feature runs the user's
+        // program under `cmd.exe /c "..."` with a `SET` preamble. cmd quoting is
+        // NOT nestable — when special characters (our `&&` separators) appear
+        // inside `/c "..."`, cmd strips the outer quote pair and re-parses the
+        // remainder UNQUOTED, so a stray `"` in any interpolated value breaks
+        // out and a following `& <cmd>` runs as an arbitrary command at the
+        // task's privilege. No escape sequence neutralises a `"` in this
+        // context (the previous `^"` escaping was a no-op after the strip), so
+        // embedded double quotes are rejected outright on this path.
+        // GOTCHA: do NOT "fix" this by re-adding `^"` escaping — it is provably
+        //         ineffective inside the post-strip unquoted region.
+        let has_dquote = |s: &str| s.contains('"');
+        if has_dquote(&p.program_path)
+            || has_dquote(&p.arguments)
+            || p.env_vars.lines().any(has_dquote)
+        {
+            return Err(windows::core::Error::new(
+                windows::core::HRESULT(0x80070057u32 as i32),
+                "Double-quote characters are not supported in the program path, arguments, or environment-variable values when environment variables are set. Remove the \" characters (or clear the Environment Variables field) and try again.",
+            ));
+        }
+
+        // Each pair is emitted as `SET "KEY=VALUE"` so cmd treats VALUE as a
+        // literal (no `& | < >` interpretation); KEY is constrained to
+        // [A-Za-z0-9_]. No carets are added — a caret would be taken literally
+        // inside the SET quotes.
+        let env_sets: String = p.env_vars.lines()
+            .filter_map(|l| {
+                let l = l.trim();
+                let eq = l.find('=')?;
+                let key = &l[..eq];
+                let val = &l[eq + 1..];
+                if !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    Some(format!("SET \"{}={}\"&& ", key, val))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // The program is wrapped in its own quotes so a path containing spaces
+        // runs correctly (embedded `"` was rejected above). Arguments follow the
+        // quoted program with `& | < > ( ) ^` caret-escaped so they are passed
+        // literally rather than acting as cmd operators — matching the non-env
+        // branch, which passes args verbatim to SetArguments.
+        let args_part = if p.arguments.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", escape_cmd_value(&p.arguments))
+        };
+        // After cmd strips the outer quote pair this parses as:
+        //   SET "K=V" && "C:\program.exe" <args>
+        // No \0 needed — BSTR::from handles null termination internally.
+        let wrapped = format!("/c \"{}\"{}\"{}\"", env_sets, p.program_path, args_part);
+        // Explicit unsafe{} required for COM method calls even inside an unsafe fn
+        // (unsafe_op_in_unsafe_fn lint, Rust 2021+).
+        unsafe {
+            exec.SetPath(&BSTR::from("C:\\Windows\\System32\\cmd.exe"))?;
+            exec.SetArguments(&BSTR::from(wrapped.as_str()))?;
+            exec.SetWorkingDirectory(&BSTR::from(p.working_dir.as_str()))?;
+        }
+    } else {
+        unsafe {
+            exec.SetPath(&BSTR::from(p.program_path.as_str()))?;
+            exec.SetArguments(&BSTR::from(p.arguments.as_str()))?;
+            exec.SetWorkingDirectory(&BSTR::from(p.working_dir.as_str()))?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTaskParams {
     pub name:           String,
@@ -251,6 +379,140 @@ pub struct CreateTaskParams {
     pub env_vars:             String,   // newline-separated KEY=VALUE pairs
 }
 
+// ── Shared validation ───────────────────────────────────────────────────────
+
+/// Validate a task name against Windows Task Scheduler restrictions.
+/// Forbidden characters: \ / : * ? " < > |
+/// Returns E_INVALIDARG (0x80070057) so errors surface correctly via IPC.
+fn validate_task_name(name: &str) -> Result<()> {
+    if name.chars().any(|c| matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        || name.trim().is_empty()
+    {
+        return Err(windows::core::Error::new(
+            windows::core::HRESULT(0x80070057u32 as i32),
+            "Task name contains invalid characters (cannot use \\ / : * ? \" < > |)",
+        ));
+    }
+    Ok(())
+}
+
+// ── Shared trigger-builder ───────────────────────────────────────────────────
+//
+// Called from BOTH `create_task` and `update_task` so trigger logic stays in
+// lockstep. Previously this was ~120 lines copy-pasted between the two methods;
+// any fix to one branch silently failed to apply to the other (the historical
+// root cause of "edit task does X correctly but create doesn't" or vice-versa).
+//
+// SAFETY: every COM call inside is wrapped in its own `unsafe {}` because the
+// `unsafe_op_in_unsafe_fn` lint requires explicit unsafe blocks even inside an
+// `unsafe fn` body in Rust 2021.
+//
+// GOTCHA: This MUST be called AFTER `defn.Triggers()` is callable, which is
+//         immediately after `service.NewTask(0)` succeeds. Both call sites
+//         already satisfy this.
+unsafe fn apply_triggers_to_definition(defn: &ITaskDefinition, p: &CreateTaskParams) -> Result<()> {
+    let trig_col = unsafe { defn.Triggers()? };
+    let ttype = match p.trigger_type.as_str() {
+        "Once"          => TASK_TRIGGER_TIME,
+        "Weekly"        => TASK_TRIGGER_WEEKLY,
+        "Monthly"       => TASK_TRIGGER_MONTHLY,
+        "Boot"          => TASK_TRIGGER_BOOT,
+        "Logon"         => TASK_TRIGGER_LOGON,
+        "Idle"          => TASK_TRIGGER_IDLE,
+        "SessionLock"   => TASK_TRIGGER_SESSION_STATE_CHANGE,
+        "SessionUnlock" => TASK_TRIGGER_SESSION_STATE_CHANGE,
+        "Interval"      => TASK_TRIGGER_DAILY,  // maps to Daily + repetition
+        _               => TASK_TRIGGER_DAILY,
+    };
+    let trigger = unsafe { trig_col.Create(ttype)? };
+    unsafe { trigger.SetEnabled(VARIANT_TRUE)?; }
+
+    let time_based = matches!(
+        ttype,
+        TASK_TRIGGER_TIME | TASK_TRIGGER_DAILY | TASK_TRIGGER_WEEKLY | TASK_TRIGGER_MONTHLY
+    );
+    if time_based && !p.start_datetime.is_empty() {
+        unsafe { trigger.SetStartBoundary(&BSTR::from(p.start_datetime.as_str()))?; }
+    }
+    if !p.end_boundary.is_empty() {
+        unsafe { let _ = trigger.SetEndBoundary(&BSTR::from(p.end_boundary.as_str())); }
+    }
+    if !p.repetition_interval.is_empty() {
+        unsafe {
+            if let Ok(rep) = trigger.Repetition() {
+                let _ = rep.SetInterval(&BSTR::from(p.repetition_interval.as_str()));
+                if !p.repetition_duration.is_empty() {
+                    let _ = rep.SetDuration(&BSTR::from(p.repetition_duration.as_str()));
+                }
+                let _ = rep.SetStopAtDurationEnd(vb(p.stop_at_duration_end));
+            }
+        }
+    }
+    if ttype == TASK_TRIGGER_DAILY {
+        if let Ok(dt) = trigger.cast::<IDailyTrigger>() {
+            // Clamp to [1, 365] before casting to i16 — a u32 > 32767 wraps negative.
+            let days = p.days_interval.max(1).min(365) as i16;
+            unsafe { dt.SetDaysInterval(days)?; }
+            if !p.random_delay.is_empty() {
+                unsafe { let _ = dt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
+            }
+        }
+    }
+    if ttype == TASK_TRIGGER_TIME && !p.random_delay.is_empty() {
+        if let Ok(tt) = trigger.cast::<ITimeTrigger>() {
+            unsafe { let _ = tt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
+        }
+    }
+    if ttype == TASK_TRIGGER_WEEKLY {
+        if let Ok(wt) = trigger.cast::<IWeeklyTrigger>() {
+            let wi = if p.weeks_interval > 0 { p.weeks_interval } else { p.days_interval.max(1) };
+            unsafe { wt.SetWeeksInterval(wi.max(1).min(52) as i16)?; }
+            if p.days_of_week > 0 {
+                unsafe { let _ = wt.SetDaysOfWeek(p.days_of_week as i16); }
+            }
+            if !p.random_delay.is_empty() {
+                unsafe { let _ = wt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
+            }
+        }
+    }
+    if ttype == TASK_TRIGGER_MONTHLY {
+        if let Ok(mt) = trigger.cast::<IMonthlyTrigger>() {
+            if p.days_of_month > 0 {
+                unsafe { let _ = mt.SetDaysOfMonth(p.days_of_month as i32); }
+            } else {
+                let day_bit = 1i32 << ((p.days_interval.max(1).min(31) - 1) as i32);
+                unsafe { let _ = mt.SetDaysOfMonth(day_bit); }
+            }
+            if p.months_of_year > 0 {
+                unsafe { let _ = mt.SetMonthsOfYear(p.months_of_year as i16); }
+            }
+            if !p.random_delay.is_empty() {
+                unsafe { let _ = mt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
+            }
+        }
+    }
+    if ttype == TASK_TRIGGER_BOOT && !p.delay.is_empty() {
+        if let Ok(bt) = trigger.cast::<IBootTrigger>() {
+            unsafe { let _ = bt.SetDelay(&BSTR::from(p.delay.as_str())); }
+        }
+    }
+    if ttype == TASK_TRIGGER_LOGON && !p.delay.is_empty() {
+        if let Ok(lt) = trigger.cast::<ILogonTrigger>() {
+            unsafe { let _ = lt.SetDelay(&BSTR::from(p.delay.as_str())); }
+        }
+    }
+    if ttype == TASK_TRIGGER_SESSION_STATE_CHANGE {
+        if let Ok(sst) = trigger.cast::<ISessionStateChangeTrigger>() {
+            let ct = if p.trigger_type == "SessionUnlock" { TASK_SESSION_UNLOCK } else { TASK_SESSION_LOCK };
+            unsafe { sst.SetStateChange(ct)?; }
+            if !p.delay.is_empty() {
+                unsafe { let _ = sst.SetDelay(&BSTR::from(p.delay.as_str())); }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── Engine ────────────────────────────────────────────────────────────────────
 pub struct SchedulerEngine {
     service: ITaskService,
@@ -291,12 +553,29 @@ impl SchedulerEngine {
                 }
             }
 
+            // RAII: if WE own the COM init and any step below returns early via `?`,
+            // CoUninitialize to balance it. Without this, a failed CoCreateInstance
+            // /Connect leaks the init — harmless once, but get_all_tasks/get_tasks
+            // now build a fresh engine per call on reused blocking-pool threads, so
+            // a repeatedly-failing new() would leak many inits on the same thread.
+            // GOTCHA (Rule 52): inner items resolve in MODULE scope — full path.
+            struct InitGuard(bool);
+            impl Drop for InitGuard {
+                fn drop(&mut self) {
+                    if self.0 { unsafe { windows::Win32::System::Com::CoUninitialize(); } }
+                }
+            }
+            let mut com_guard = InitGuard(com_initialized);
+
             let service: ITaskService =
                 CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER)?;
 
             let v = VARIANT::default();
             service.Connect(&v, &v, &v, &v)?;
 
+            // Success — ownership of the COM init transfers to the returned struct
+            // (its Drop calls CoUninitialize). Disarm the guard so it doesn't too.
+            com_guard.0 = false;
             Ok(SchedulerEngine { service, com_initialized })
         }
     }
@@ -329,7 +608,9 @@ impl SchedulerEngine {
     // ── Tasks ─────────────────────────────────────────────────────────────────
     pub fn get_tasks(&self, folder_path: &str) -> Result<Vec<TaskInfo>> {
         let folder = unsafe { self.service.GetFolder(&BSTR::from(folder_path))? };
-        let tasks  = unsafe { folder.GetTasks(0)? };
+        // Pass TASK_ENUM_HIDDEN (0x1) so hidden/system tasks are included.
+        // Without this flag, many Microsoft system tasks are invisible.
+        let tasks  = unsafe { folder.GetTasks(1)? };
         let count  = unsafe { tasks.Count()? };
         let mut out = Vec::new();
         for i in 1..=count {
@@ -570,6 +851,7 @@ impl SchedulerEngine {
             last_result:      fmt_code(last_code),
             last_result_code: last_code,
             triggers,         actions,
+            action_count:     acnt.max(0) as u32,
             description,      author,
             run_as_user,      hidden,
             enabled,
@@ -631,6 +913,13 @@ impl SchedulerEngine {
     }
 
     pub fn import_xml(&self, folder_path: &str, task_name: &str, xml: &str) -> Result<()> {
+        // Validate the name on the import path too, so it enforces the same
+        // consistency guarantees as create_task / update_task (which both call
+        // validate_task_name). Without this, import is the one registration path
+        // that accepts names the other two reject. RegisterTask below uses
+        // TASK_CREATE_OR_UPDATE, so a name collision overwrites in place — the
+        // caller (restore / backup-restore) is responsible for collision UX.
+        validate_task_name(task_name)?;
         let folder = unsafe { self.service.GetFolder(&BSTR::from(folder_path))? };
         let v      = VARIANT::default();
         unsafe {
@@ -649,14 +938,7 @@ impl SchedulerEngine {
     // ── Create ────────────────────────────────────────────────────────────────
     pub fn create_task(&self, p: &CreateTaskParams) -> Result<()> {
         // Validate task name: Windows Task Scheduler forbids these characters.
-        if p.name.chars().any(|c| matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
-            || p.name.trim().is_empty()
-        {
-            return Err(windows::core::Error::new(
-                windows::core::HRESULT(0x80070057u32 as i32),
-                "Task name contains invalid characters (cannot use \\ / : * ? \" < > |)",
-            ));
-        }
+        validate_task_name(&p.name)?;
 
         let defn: ITaskDefinition = unsafe { self.service.NewTask(0)? };
 
@@ -717,122 +999,8 @@ impl SchedulerEngine {
             }
         }
 
-        let trig_col = unsafe { defn.Triggers()? };
-        let ttype = match p.trigger_type.as_str() {
-            "Once"          => TASK_TRIGGER_TIME,
-            "Weekly"        => TASK_TRIGGER_WEEKLY,
-            "Monthly"       => TASK_TRIGGER_MONTHLY,
-            "Boot"          => TASK_TRIGGER_BOOT,
-            "Logon"         => TASK_TRIGGER_LOGON,
-            "Idle"          => TASK_TRIGGER_IDLE,
-            "SessionLock"   => TASK_TRIGGER_SESSION_STATE_CHANGE,
-            "SessionUnlock" => TASK_TRIGGER_SESSION_STATE_CHANGE,
-            "Interval"      => TASK_TRIGGER_DAILY,  // maps to Daily + repetition
-            _               => TASK_TRIGGER_DAILY,
-        };
-        let trigger = unsafe { trig_col.Create(ttype)? };
-        unsafe { trigger.SetEnabled(VARIANT_TRUE)? };
-
-        let time_based = matches!(
-            ttype,
-            TASK_TRIGGER_TIME | TASK_TRIGGER_DAILY | TASK_TRIGGER_WEEKLY | TASK_TRIGGER_MONTHLY
-        );
-        if time_based && !p.start_datetime.is_empty() {
-            unsafe { trigger.SetStartBoundary(&BSTR::from(p.start_datetime.as_str()))? };
-        }
-
-        // End boundary (optional — applies to all trigger types)
-        if !p.end_boundary.is_empty() {
-            unsafe { let _ = trigger.SetEndBoundary(&BSTR::from(p.end_boundary.as_str())); }
-        }
-
-        // Repetition pattern (applies to all trigger types when interval is set)
-        if !p.repetition_interval.is_empty() {
-            unsafe {
-                if let Ok(rep) = trigger.Repetition() {
-                    let _ = rep.SetInterval(&BSTR::from(p.repetition_interval.as_str()));
-                    if !p.repetition_duration.is_empty() {
-                        let _ = rep.SetDuration(&BSTR::from(p.repetition_duration.as_str()));
-                    }
-                    let _ = rep.SetStopAtDurationEnd(vb(p.stop_at_duration_end));
-                }
-            }
-        }
-
-        // Daily trigger
-        if ttype == TASK_TRIGGER_DAILY {
-            if let Ok(dt) = trigger.cast::<IDailyTrigger>() {
-                unsafe { dt.SetDaysInterval(p.days_interval.max(1) as i16)? };
-                if !p.random_delay.is_empty() {
-                    unsafe { let _ = dt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
-                }
-            }
-        }
-
-        // Once (time) trigger random delay
-        if ttype == TASK_TRIGGER_TIME && !p.random_delay.is_empty() {
-            if let Ok(tt) = trigger.cast::<ITimeTrigger>() {
-                unsafe { let _ = tt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
-            }
-        }
-
-        // Weekly trigger
-        if ttype == TASK_TRIGGER_WEEKLY {
-            if let Ok(wt) = trigger.cast::<IWeeklyTrigger>() {
-                let wi = if p.weeks_interval > 0 { p.weeks_interval } else { p.days_interval.max(1) };
-                unsafe { wt.SetWeeksInterval(wi as i16)? };
-                if p.days_of_week > 0 {
-                    unsafe { let _ = wt.SetDaysOfWeek(p.days_of_week as i16); }
-                }
-                if !p.random_delay.is_empty() {
-                    unsafe { let _ = wt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
-                }
-            }
-        }
-
-        // Monthly trigger
-        if ttype == TASK_TRIGGER_MONTHLY {
-            if let Ok(mt) = trigger.cast::<IMonthlyTrigger>() {
-                if p.days_of_month > 0 {
-                    unsafe { let _ = mt.SetDaysOfMonth(p.days_of_month as i32); }
-                } else {
-                    // Convert 1-based day number to bitmask (bit 0 = day 1)
-                    let day_bit = 1i32 << ((p.days_interval.max(1).min(31) - 1) as i32);
-                    unsafe { let _ = mt.SetDaysOfMonth(day_bit); }
-                }
-                if p.months_of_year > 0 {
-                    unsafe { let _ = mt.SetMonthsOfYear(p.months_of_year as i16); }
-                }
-                if !p.random_delay.is_empty() {
-                    unsafe { let _ = mt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
-                }
-            }
-        }
-
-        // Boot trigger delay
-        if ttype == TASK_TRIGGER_BOOT && !p.delay.is_empty() {
-            if let Ok(bt) = trigger.cast::<IBootTrigger>() {
-                unsafe { let _ = bt.SetDelay(&BSTR::from(p.delay.as_str())); }
-            }
-        }
-
-        // Logon trigger delay
-        if ttype == TASK_TRIGGER_LOGON && !p.delay.is_empty() {
-            if let Ok(lt) = trigger.cast::<ILogonTrigger>() {
-                unsafe { let _ = lt.SetDelay(&BSTR::from(p.delay.as_str())); }
-            }
-        }
-
-        // Session state change trigger
-        if ttype == TASK_TRIGGER_SESSION_STATE_CHANGE {
-            if let Ok(sst) = trigger.cast::<ISessionStateChangeTrigger>() {
-                let ct = if p.trigger_type == "SessionUnlock" { TASK_SESSION_UNLOCK } else { TASK_SESSION_LOCK };
-                unsafe { sst.SetStateChange(ct)? };
-                if !p.delay.is_empty() {
-                    unsafe { let _ = sst.SetDelay(&BSTR::from(p.delay.as_str())); }
-                }
-            }
-        }
+        // Triggers — shared with create_task/update_task via apply_triggers_to_definition()
+        unsafe { apply_triggers_to_definition(&defn, p)?; }
 
         let act_col = unsafe { defn.Actions()? };
         let action  = unsafe { act_col.Create(TASK_ACTION_EXEC)? };
@@ -841,46 +1009,9 @@ impl SchedulerEngine {
         // If env_vars are set, wrap the command in cmd.exe with SET statements.
         // Each KEY=VALUE pair is escaped so that cmd.exe special characters in
         // the value portion (& | < > ^ ( ) ") cannot break out of the SET command.
-        if !p.env_vars.is_empty() {
-            fn escape_cmd_value(s: &str) -> String {
-                s.chars().map(|c| match c {
-                    '&' | '|' | '<' | '>' | '^' | '(' | ')' | '"' => format!("^{c}"),
-                    _ => c.to_string(),
-                }).collect()
-            }
-
-            let env_sets: String = p.env_vars.lines()
-                .filter_map(|l| {
-                    let l = l.trim();
-                    // Only accept lines of the form KEY=VALUE where KEY is alphanumeric/underscore
-                    let eq = l.find('=')?;
-                    let key = &l[..eq];
-                    let val = &l[eq + 1..];
-                    if key.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                        Some(format!("SET {}={} && ", key, escape_cmd_value(val)))
-                    } else {
-                        None // skip keys with invalid characters
-                    }
-                })
-                .collect();
-
-            let wrapped_args = format!("/c \"{}{}{}\"",
-                env_sets,
-                p.program_path,
-                if p.arguments.is_empty() { String::new() } else { format!(" {}", p.arguments) }
-            );
-            unsafe {
-                exec.SetPath(&BSTR::from("C:\\Windows\\System32\\cmd.exe"))?;
-                exec.SetArguments(&BSTR::from(wrapped_args.as_str()))?;
-                exec.SetWorkingDirectory(&BSTR::from(p.working_dir.as_str()))?;
-            }
-        } else {
-            unsafe {
-                exec.SetPath(&BSTR::from(p.program_path.as_str()))?;
-                exec.SetArguments(&BSTR::from(p.arguments.as_str()))?;
-                exec.SetWorkingDirectory(&BSTR::from(p.working_dir.as_str()))?;
-            }
-        }
+        // MED-3 / HIGH-1: use shared build_exec_action() — eliminates the
+        // duplicated env_vars block and ensures program_path is always escaped.
+        unsafe { build_exec_action(&exec, p)?; }
 
         // Normalise folder_path: treat empty or root as "\\"
         let folder_path = {
@@ -894,7 +1025,7 @@ impl SchedulerEngine {
         // Windows Task Scheduler knows which service account to use.
         // Note: is_service_account is only true when run_as is non-empty (SYSTEM/NT AUTHORITY/NT SERVICE).
         let user_v = if is_service_account {
-            windows::core::VARIANT::from(BSTR::from(run_as))
+            VARIANT::from(BSTR::from(run_as))
         } else {
             VARIANT::default()
         };
@@ -913,13 +1044,173 @@ impl SchedulerEngine {
         Ok(())
     }
 
-    // ── Update (delete + recreate) ────────────────────────────────────────────
+    // ── Update — preserve the existing task's security principal ─────────────
+    // The old delete+recreate approach broke system tasks (SYSTEM, NT AUTHORITY\*)
+    // because recreating them with TASK_LOGON_INTERACTIVE_TOKEN is rejected.
+    // Instead we:
+    //   1. Read the existing task's logon type and UserId.
+    //   2. Build a fresh ITaskDefinition from `p` (triggers, actions, settings).
+    //   3. Apply the preserved principal onto the new definition.
+    //   4. Register with TASK_CREATE_OR_UPDATE — no delete needed.
     pub fn update_task(&self, task_path: &str, p: &CreateTaskParams) -> Result<()> {
-        // Best-effort delete of the old task. Ignore errors (task may have been renamed
-        // or already removed). create_task uses TASK_CREATE_OR_UPDATE so it will overwrite
-        // any existing task with the same name.
-        let _ = self.delete_task(task_path);
-        self.create_task(p)
+        let (fp, tn) = split_path(task_path);
+        let folder   = unsafe { self.service.GetFolder(&BSTR::from(fp))? };
+
+        // ── Read existing principal + author (best-effort) ────────────────────
+        // Author is preserved here because the simple-form editor exposes no
+        // Author field, so `p.author` is always empty on an edit. Without this,
+        // every edit would blank the task's Author metadata (e.g. wipe
+        // "Microsoft Corporation" off a system task) — silent definition
+        // corruption. Mirrors the principal-preservation pattern below.
+        // (audit fix 1.15.1)
+        let mut preserved_logon:  Option<TASK_LOGON_TYPE>    = None;
+        let mut preserved_user:   Option<String>             = None;
+        let mut preserved_level:  Option<TASK_RUNLEVEL_TYPE> = None;
+        let mut preserved_author: Option<String>             = None;
+
+        if let Ok(existing) = unsafe { folder.GetTask(&BSTR::from(tn)) } {
+            if let Ok(defn) = unsafe { existing.Definition() } {
+                if let Ok(pr) = unsafe { defn.Principal() } {
+                    let mut lt = TASK_LOGON_NONE;
+                    unsafe { let _ = pr.LogonType(&mut lt); }
+                    preserved_logon = Some(lt);
+
+                    let user = unsafe { read_bstr(|b| pr.UserId(b)) };
+                    if !user.is_empty() { preserved_user = Some(user); }
+
+                    let mut rl = TASK_RUNLEVEL_LUA;
+                    unsafe { let _ = pr.RunLevel(&mut rl); }
+                    preserved_level = Some(rl);
+                }
+                if let Ok(ri) = unsafe { defn.RegistrationInfo() } {
+                    let a = unsafe { read_bstr(|b| ri.Author(b)) };
+                    if !a.is_empty() { preserved_author = Some(a); }
+                }
+            }
+        }
+
+        // ── Build the new definition (same path as create_task) ───────────────
+        // We re-use create_task's full logic by temporarily calling it inside a
+        // try — but we can't pass the preserved principal through CreateTaskParams
+        // easily, so instead we rebuild the definition inline and apply the
+        // preserved principal at the end.
+
+        // Validate name
+        validate_task_name(&p.name)?;
+
+        // Build definition and registration info
+        let defn: ITaskDefinition = unsafe { self.service.NewTask(0)? };
+        let reg = unsafe { defn.RegistrationInfo()? };
+        // Author: the simple-form editor has no author field (p.author is ""),
+        // so preserve the existing author rather than blanking it. If a caller
+        // ever supplies a non-empty author explicitly, that wins. (audit fix 1.15.1)
+        let final_author = if !p.author.trim().is_empty() {
+            p.author.clone()
+        } else {
+            preserved_author.clone().unwrap_or_default()
+        };
+        unsafe {
+            reg.SetDescription(&BSTR::from(p.description.as_str()))?;
+            reg.SetAuthor(&BSTR::from(final_author.as_str()))?;
+        }
+
+        // Settings
+        let settings = unsafe { defn.Settings()? };
+        let exec_limit = if p.execution_time_limit.is_empty() { "PT0S" } else { p.execution_time_limit.as_str() };
+        unsafe {
+            settings.SetEnabled(vb(p.enabled))?;
+            settings.SetHidden(vb(p.hidden))?;
+            settings.SetStartWhenAvailable(VARIANT_TRUE)?;
+            settings.SetMultipleInstances(
+                if p.stop_existing { TASK_INSTANCES_STOP_EXISTING } else { TASK_INSTANCES_IGNORE_NEW }
+            )?;
+            settings.SetExecutionTimeLimit(&BSTR::from(exec_limit))?;
+            settings.SetPriority(p.priority.clamp(0, 10) as i32)?;
+            settings.SetWakeToRun(vb(p.wake_to_run))?;
+            settings.SetRunOnlyIfNetworkAvailable(vb(p.run_only_if_network))?;
+            settings.SetDisallowStartIfOnBatteries(vb(p.disallow_on_batteries))?;
+            settings.SetStopIfGoingOnBatteries(vb(p.stop_on_batteries))?;
+            settings.SetRunOnlyIfIdle(vb(p.run_only_if_idle))?;
+            if p.delete_expired {
+                let _ = settings.SetDeleteExpiredTaskAfter(&BSTR::from("PT0S"));
+            }
+        }
+
+        // Principal — use preserved values when available, fall back to params
+        let run_as  = p.run_as_user.trim();
+        let u_upper = run_as.to_ascii_uppercase();
+        let is_service_account = !run_as.is_empty()
+            && (u_upper == "SYSTEM"
+                || u_upper.starts_with("NT AUTHORITY\\")
+                || u_upper.starts_with("NT SERVICE\\"));
+
+        // Determine the final logon type: prefer the preserved one so we never
+        // accidentally downgrade a service-account task to INTERACTIVE_TOKEN.
+        let final_logon = preserved_logon.unwrap_or_else(|| {
+            if is_service_account { TASK_LOGON_SERVICE_ACCOUNT } else { TASK_LOGON_INTERACTIVE_TOKEN }
+        });
+        let final_level = preserved_level.unwrap_or(
+            if p.run_level == 1 { TASK_RUNLEVEL_HIGHEST } else { TASK_RUNLEVEL_LUA }
+        );
+        // Determine final user: preserved user wins unless the caller explicitly
+        // provided a different service account.
+        let final_user: String = if is_service_account {
+            run_as.to_string()
+        } else {
+            preserved_user.clone().unwrap_or_default()
+        };
+
+        let principal = unsafe { defn.Principal()? };
+        unsafe {
+            principal.SetRunLevel(final_level)?;
+            principal.SetLogonType(final_logon)?;
+            if !final_user.is_empty() {
+                let _ = principal.SetUserId(&BSTR::from(final_user.as_str()));
+            }
+        }
+
+        // Triggers (copied verbatim from create_task)
+        // Triggers — shared with create_task/update_task via apply_triggers_to_definition()
+        unsafe { apply_triggers_to_definition(&defn, p)?; }
+        // Action
+        let act_col = unsafe { defn.Actions()? };
+        let action  = unsafe { act_col.Create(TASK_ACTION_EXEC)? };
+        let exec: IExecAction = action.cast()?;
+        // MED-3 / HIGH-1: use shared build_exec_action() — eliminates the
+        // duplicated env_vars block and ensures program_path is always escaped.
+        unsafe { build_exec_action(&exec, p)?; }
+
+        // Register — no delete needed; TASK_CREATE_OR_UPDATE updates in place.
+        // BUG FIX (2.1.0): use the SOURCE folder `fp` (extracted from `task_path`)
+        // — NOT `p.folder_path` from the form.
+        // If `p.folder_path` differed from where the task currently lives,
+        // RegisterTaskDefinition would create a NEW copy in the form folder while
+        // leaving the original in place — silent task duplication. The detail
+        // panel populates the folder field from the displayed task, but tasks
+        // loaded via `get_all_tasks` aggregate across folders, and the form's
+        // folder field has been observed to drift on edit.
+        // Moving a task between folders should be an explicit operation.
+        let folder_path = if fp.is_empty() { "\\".to_string() } else { fp.to_string() };
+        let reg_folder = unsafe { self.service.GetFolder(&BSTR::from(folder_path.as_str()))? };
+        let empty_v    = VARIANT::default();
+        let user_v: VARIANT = if !final_user.is_empty() {
+            VARIANT::from(BSTR::from(final_user.as_str()))
+        } else {
+            VARIANT::default()
+        };
+
+        unsafe {
+            reg_folder.RegisterTaskDefinition(
+                &BSTR::from(p.name.as_str()),
+                &defn,
+                TASK_CREATE_OR_UPDATE.0,
+                &user_v,
+                &empty_v,
+                final_logon,
+                &empty_v,
+            )?;
+        }
+        Ok(())
     }
 
     // ── Running tasks ─────────────────────────────────────────────────────────
@@ -955,17 +1246,34 @@ impl SchedulerEngine {
             Err(_) => return Ok(vec![]),
         };
 
-        // Build a 90-day window: start = 90 days ago (simplified via month math),
-        // end = very far future so we capture all recent scheduled runs.
-        let end_st = unsafe { GetSystemTime() };
+        // Build a 90-day FORWARD window: start = now, end = now + 3 months.
+        // GetRunTimes returns future scheduled run times — matching the JS
+        // label "Scheduled runs (next 90 days)".
+        // GOTCHA: Using (now-90days, now) would return past scheduled times,
+        //         not future ones — the wrong direction for a "next runs" view.
+        let start_st = unsafe { GetSystemTime() };
 
-        let mut start_st = end_st;
-        // Subtract ~3 months (approximation of 90 days)
-        if start_st.wMonth <= 3 {
-            start_st.wYear  = start_st.wYear.saturating_sub(1);
-            start_st.wMonth = start_st.wMonth + 9; // wrap around
+        let mut end_st = start_st;
+        // Add 3 months (~90 days). wMonth is u16, values 1-12.
+        if end_st.wMonth > 9 {
+            end_st.wMonth -= 9;   // 10→1, 11→2, 12→3
+            end_st.wYear  += 1;
         } else {
-            start_st.wMonth -= 3;
+            end_st.wMonth += 3;   // 1→4, 2→5, ..., 9→12
+        }
+        // MED-1 FIX: clamp wDay to the last valid day of the target month so we
+        // never produce an invalid SYSTEMTIME (e.g. April 31, February 30).
+        // GetRunTimes rejects invalid dates and silently returns 0 results.
+        {
+            let max_day: u16 = match end_st.wMonth {
+                4 | 6 | 9 | 11 => 30,
+                2 => {
+                    let y = end_st.wYear;
+                    if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 29 } else { 28 }
+                }
+                _ => 31,
+            };
+            if end_st.wDay > max_day { end_st.wDay = max_day; }
         }
 
         let limit = max_records.min(100);
@@ -973,8 +1281,20 @@ impl SchedulerEngine {
         let mut times: *mut SYSTEMTIME = std::ptr::null_mut();
 
         let ok = unsafe { task.GetRunTimes(&start_st, &end_st, &mut count, &mut times) };
-        if ok.is_err() || times.is_null() || count == 0 {
+        // Free the buffer the COM server may have allocated, regardless of error or count.
+        // CoTaskMemFree is a no-op on null, but we guard anyway for clarity.
+        if ok.is_err() {
+            if !times.is_null() {
+                unsafe { CoTaskMemFree(Some(times as *mut _)); }
+            }
             return Ok(vec![]); // graceful fallback (history may be disabled)
+        }
+
+        if times.is_null() || count == 0 {
+            if !times.is_null() {
+                unsafe { CoTaskMemFree(Some(times as *mut _)); }
+            }
+            return Ok(vec![]);
         }
 
         let mut records = Vec::new();
