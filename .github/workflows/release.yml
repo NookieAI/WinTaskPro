@@ -4,10 +4,11 @@
 # Triggered on: push of a version tag (v*)
 #   git tag v1.15.0 && git push origin v1.15.0
 #
-# Produces (uploaded as release assets):
-#   • WinTaskPro_1.15.0_x64_en-US.msi             (MSI installer)
-#   • WinTaskPro_1.15.0_x64-setup.exe              (NSIS installer)
-#   • WinTaskPro.exe                              (single-file portable exe — auto-update target)
+# Produces (the ONLY release asset):
+#   • WinTaskPro.exe   (single-file portable exe — auto-update target)
+#
+# Installer bundling (NSIS / MSI) was intentionally REMOVED — the project ships
+# only the single portable exe (bundle is also disabled in tauri.conf.json).
 #
 # This workflow does NOT publish a signed updater manifest. The update flow
 # shipped in 1.8.0 is "in-place self-replace" — see UPDATER.md for the
@@ -82,46 +83,10 @@ jobs:
             Write-Host "Cargo.lock is in sync with Cargo.toml."
           }
 
-      # ── Build & Release (NSIS + MSI) ─────────────────────────────────────
-      - name: Build Tauri installers and create release
-        id: tauri
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Code signing for SmartScreen (uncomment when cert is configured):
-          # WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'WinTaskPro ${{ github.ref_name }}'
-          releaseBody: |
-            ## What's new
-
-            See [CHANGELOG.md](https://github.com/NookieAI/WinTaskPro/blob/main/CHANGELOG.md) for the full list of changes.
-
-            ## Downloads
-
-            **`WinTaskPro.exe`** — single-file portable. Run from anywhere. **This is what the in-app auto-updater downloads** when a new release is detected.
-            **NSIS / MSI installer** — adds Start Menu shortcut. Same binary inside, plus install metadata.
-
-            ## Auto-update
-
-            Existing 1.8.0+ installs check GitHub on each launch. When a new release is published, click **🔄 Update Now** in the in-app banner to download `WinTaskPro.exe` from this page, replace the running exe in place, and re-launch — no manual download needed.
-
-            ## Requirements
-
-            - Windows 10 21H1 or later (64-bit)
-            - WebView2 Runtime (pre-installed on Windows 10 21H1+ and Windows 11)
-            - Run as Administrator (required for Task Scheduler access)
-          releaseDraft: false
-          prerelease: false
-          # 1.8.0+ ships without plugin-updater wired up — no signed manifest.
-          # See UPDATER.md → "Step 7" to enable this when ready.
-          includeUpdaterJson: false
-
-      # ── Build portable EXE (--no-bundle) ─────────────────────────────────
-      # Tauri-action above only produces NSIS+MSI. The portable build is a
-      # separate cargo invocation that skips bundling and produces just the
-      # raw .exe — same binary that ends up inside the installers.
+      # ── Build the portable EXE (the ONLY release artefact) ──────────────
+      # `tauri build --no-bundle` produces just the raw WinTaskPro.exe — no
+      # NSIS/MSI installers. The release itself is created in the final step
+      # below (softprops/action-gh-release), with only this exe attached.
       - name: Build portable exe
         run: npm run build:portable
 
@@ -173,14 +138,34 @@ jobs:
           "sha256=$hash"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "size=$size"    | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      # ── Upload portable EXE to the release ──────────────────────────────
-      # Uses softprops/action-gh-release because tauri-action doesn't expose
-      # an "add asset to existing release" hook. The release was created in
-      # the tauri-action step above; we attach to the same tag.
-      - name: Upload WinTaskPro.exe to release
+      # ── Create the GitHub Release with ONLY WinTaskPro.exe ──────────────
+      # softprops/action-gh-release creates the release (if absent) and uploads
+      # the single portable exe as the sole asset — no installers.
+      - name: Create release (WinTaskPro.exe only)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          name: 'WinTaskPro ${{ github.ref_name }}'
+          body: |
+            ## What's new
+
+            See [CHANGELOG.md](https://github.com/NookieAI/WinTaskPro/blob/main/CHANGELOG.md) for the full list of changes.
+
+            ## Download
+
+            **`WinTaskPro.exe`** — single-file portable. Run from anywhere; no install. This is also what the in-app auto-updater downloads.
+
+            ## Auto-update
+
+            Existing 1.8.0+ installs check GitHub on each launch. When a new release is published, click **🔄 Update Now** in the in-app banner to download `WinTaskPro.exe`, replace the running exe in place, and re-launch.
+
+            ## Requirements
+
+            - Windows 10 21H1 or later (64-bit)
+            - WebView2 Runtime (pre-installed on Windows 10 21H1+ and Windows 11)
+            - Run as Administrator (required for Task Scheduler access)
+          draft: false
+          prerelease: false
           files: ${{ steps.portable.outputs.path }}
           fail_on_unmatched_files: true
         env:
