@@ -174,17 +174,37 @@ function setStatus(msg) { console.debug("[status]", msg); }
 
 // ── Toast notifications ───────────────────────────────────────────────────────
 let toastTimer = null;
-function showToast(msg, type = 'info') {
+// opts.sticky: don't auto-dismiss (caller mutates .textContent for progress, then
+// calls showToast() again to replace it with an auto-dismissing summary). Returns
+// the toast element so callers can update it in place. (ux-3)
+function showToast(msg, type = 'info', { sticky = false } = {}) {
   const el = document.getElementById('toast');
-  if (!el) return;
+  if (!el) return null;
   el.textContent = msg;
   el.className   = 'show ' + type;
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.className = ''; }, 2500);
+  if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+  if (!sticky) toastTimer = setTimeout(() => { el.className = ''; }, 2500);
+  return el;
 }
 
 // ── Modal helpers ─────────────────────────────────────────────────────────────
 let _modalCloseTimer = null; // track the delayed clear so openModal can cancel it
+
+// a11y-5: hide the page behind an open overlay from assistive tech. The dialog's
+// aria-modal="true" covers most modern AT, but inerting #root-wrap is a robust
+// complement for screen readers whose browse/virtual cursor can still reach
+// background content. The overlays (#modal-overlay, #script-editor-overlay,
+// #help-modal-overlay) are SIBLINGS of #root-wrap, so hiding root-wrap never hides
+// the live dialog. A counter handles stacked overlays so closing one while another
+// is still open does not prematurely un-hide the page.
+let _modalOpenCount = 0;
+function setBackgroundInert(open) {
+  _modalOpenCount = Math.max(0, _modalOpenCount + (open ? 1 : -1));
+  const root = document.getElementById('root-wrap');
+  if (!root) return;
+  if (_modalOpenCount > 0) root.setAttribute('aria-hidden', 'true');
+  else root.removeAttribute('aria-hidden');
+}
 
 function openModal(title, bodyHtml, footerHtml = '') {
   // Cancel any pending post-close clear. Without this, the following race
@@ -195,25 +215,32 @@ function openModal(title, bodyHtml, footerHtml = '') {
     clearTimeout(_modalCloseTimer);
     _modalCloseTimer = null;
   }
+  // vis-14: if a previous modal is mid-exit, cancel its closing state so the new
+  // one opens cleanly instead of getting stuck at the faded-out keyframe.
+  document.getElementById('modal-overlay').classList.remove('closing');
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML    = bodyHtml;
   document.getElementById('modal-footer').innerHTML  = footerHtml;
   document.getElementById('modal-overlay').classList.add('show');
+  setBackgroundInert(true);                          // a11y-5: inert background
   trapFocus(document.getElementById('modal-box'));   // a11y: trap + initial focus
 }
 
 function closeModal() {
+  setBackgroundInert(false); // a11y-5: un-hide page BEFORE focus returns to it
   releaseFocusTrap();   // a11y: restore focus to the element that opened the modal
-  document.getElementById('modal-overlay').classList.remove('show');
-  // Delay the clear slightly so the closing CSS animation plays out
-  // before the content disappears. The timer is tracked so openModal
-  // can cancel it if a new modal opens before the 200ms elapses.
+  // vis-14: swap .show -> .closing so the overlay stays displayed while the exit
+  // animation runs (removing .show alone snaps display:none and kills the anim).
+  const ov = document.getElementById('modal-overlay');
+  ov.classList.remove('show');
+  ov.classList.add('closing');
   if (_modalCloseTimer) clearTimeout(_modalCloseTimer);
   _modalCloseTimer = setTimeout(() => {
     _modalCloseTimer = null;
+    ov.classList.remove('closing');
     document.getElementById('modal-body').innerHTML    = '';
     document.getElementById('modal-footer').innerHTML  = '';
-  }, 200);
+  }, 170);
 }
 
 // ── Modal focus management + keyboard activation (a11y, audit 2026-06-19) ──────
@@ -425,7 +452,9 @@ async function refreshFolders() {
         if (folder === '\\') return;
         e.preventDefault();
         const ctxMenu = document.getElementById('ctx-menu');
-        ctxMenu.innerHTML = `<div class="ctx-item danger" id="folder-ctx-delete">🗑 Delete Folder…</div>`;
+        ctxMenu.setAttribute('role', 'menu');               // a11y-9
+        ctxMenu.setAttribute('aria-label', 'Folder options');
+        ctxMenu.innerHTML = `<div class="ctx-item danger" role="menuitem" tabindex="-1" id="folder-ctx-delete">🗑 Delete Folder…</div>`;
         ctxMenu.style.display = 'block';
         ctxMenu.style.left = e.pageX + 'px';
         ctxMenu.style.top  = e.pageY + 'px';
@@ -748,6 +777,15 @@ function sortBy(col) {
     sortCol = col;
     sortDir = 1;
   }
+  // a11y-4: announce sort state to assistive tech and show a directional arrow on
+  // the active column. Reset every sortable header, then set the active one — so
+  // switching columns doesn't leave a stale aria-sort/arrow on the previous one.
+  document.querySelectorAll('#task-table thead th[aria-sort]').forEach(th => {
+    const active = th.getAttribute('data-col') === sortCol;
+    th.setAttribute('aria-sort', active ? (sortDir === 1 ? 'ascending' : 'descending') : 'none');
+    const ico = th.querySelector('.sort-icon');
+    if (ico) ico.textContent = active ? (sortDir === 1 ? '↑' : '↓') : '⇅';
+  });
   filterTasks();
 }
 
@@ -872,9 +910,9 @@ function renderTable() {
       <td data-col="next_run">${escHtml(task.next_run || '—')}</td>
       <td data-col="last_result" class="${resultClass(task.last_result)}">${escHtml(task.last_result || '—')}</td>
       <td data-col="controls" class="controls-cell">
-        <button class="icon-btn" title="Run"    data-action="run"    data-path="${epath}">▶</button>
-        <button class="icon-btn" title="Stop"   data-action="stop"   data-path="${epath}">⏹</button>
-        <button class="icon-btn danger" title="Delete" data-action="delete" data-path="${epath}">🗑</button>
+        <button class="icon-btn" title="Run"    aria-label="Run task"    data-action="run"    data-path="${epath}">▶</button>
+        <button class="icon-btn" title="Stop"   aria-label="Stop task"   data-action="stop"   data-path="${epath}">⏹</button>
+        <button class="icon-btn danger" title="Delete" aria-label="Delete task" data-action="delete" data-path="${epath}">🗑</button>
       </td>
     </tr>`;
   }).join('');
@@ -1120,7 +1158,7 @@ function openDetail(task) {
         <tr><td>Enabled</td><td>${task.enabled ? 'Yes' : 'No'}</td></tr>
         <tr><td>Last Run</td><td>${escHtml(task.last_run || '—')}</td></tr>
         <tr><td>Next Run</td><td>${escHtml(task.next_run || '—')}</td></tr>
-        <tr><td>Last Result</td><td class="${resultClass(task.last_result)}">${escHtml(task.last_result || '—')}${fpResultHelpBadge(task.last_result)}</td></tr>
+        <tr><td>Last Result</td><td class="${resultClass(task.last_result)}">${escHtml(task.last_result || '—')}${fpResultInlineName(task.last_result)}${fpResultHelpBadge(task.last_result)}</td></tr>
       </table>
     </div>`;
 
@@ -1432,13 +1470,13 @@ async function deleteTask(path, name) {
   // Detect system tasks (under \Microsoft\ or \Windows\) and show an extra warning
   const isSystemTask = path.startsWith('\\Microsoft\\') || path.startsWith('\\Windows\\');
   const systemWarning = isSystemTask
-    ? `<div class="info-box" style="margin-bottom:12px;border-color:var(--yellow);color:var(--yellow)">⚠ This is a Windows system task. Deleting it may break Windows functionality.</div>`
+    ? `<div class="info-box warn" style="margin-bottom:12px">⚠ This is a Windows system task. Deleting it may break Windows functionality.</div>`
     : '';
 
   openModal('🗑 Delete Task',
     `<div style="padding:16px 16px 8px">
        ${systemWarning}
-       <div style="font-size:16px;font-weight:700;color:var(--red);margin-bottom:6px">${escHtml(name)}</div>
+       <div style="font-size:16px;font-weight:700;color:var(--badge-failed-fg);margin-bottom:6px">${escHtml(name)}</div>
        <div style="font-size:11px;color:var(--text3);font-family:monospace;word-break:break-all;margin-bottom:14px">${escHtml(path)}</div>
        <p style="color:var(--text2);font-size:13px">This action <strong>cannot be undone</strong>. The task will be permanently removed from Windows Task Scheduler.</p>
      </div>`,
@@ -1642,27 +1680,27 @@ async function openCreateDialog(prefill = {}) {
     <!-- ── Tab 0: General ── -->
     <div class="modal-tab-panel active" id="tab-panel-0">
       <div class="form-group">
-        <label>Task Name *</label>
+        <label for="cf-name">Task Name *</label>
         <input type="text" id="cf-name" class="form-control" value="${escHtml(prefill.name || '')}" placeholder="MyBackupTask" />
         <div class="form-error" id="err-name">Name is required and cannot contain: \ / : * ? " &lt; &gt; |</div>
       </div>
       <div class="form-group">
-        <label>Folder</label>
+        <label for="cf-folder">Folder</label>
         <select id="cf-folder" class="form-control">${folderOptions}</select>
       </div>
       <div class="form-group">
-        <label>Description</label>
+        <label for="cf-desc">Description</label>
         <textarea id="cf-desc" rows="3" class="form-control">${escHtml(prefill.description || '')}</textarea>
       </div>
       <div class="form-group">
-        <label>Run Level</label>
+        <label for="cf-run-level">Run Level</label>
         <select id="cf-run-level" class="form-control">
           <option value="0" ${(prefill.run_level || 0) === 0 ? 'selected' : ''}>Standard User</option>
           <option value="1" ${prefill.run_level === 1 ? 'selected' : ''}>Highest Privileges (Admin)</option>
         </select>
       </div>
       <div class="form-group">
-        <label>Run As User</label>
+        <label for="cf-run-as-user">Run As User</label>
         <input type="text" id="cf-run-as-user" class="form-control" value="${escHtml(prefill.run_as_user || '')}" placeholder="SYSTEM or leave blank for current user" />
         <div class="form-hint">Leave blank to run as the current user. For service accounts enter: SYSTEM, NT AUTHORITY\\NetworkService, etc. Regular user names are not supported by the Task Scheduler API without a password.</div>
       </div>
@@ -1683,7 +1721,7 @@ async function openCreateDialog(prefill = {}) {
     <!-- ── Tab 1: Trigger ── -->
     <div class="modal-tab-panel" id="tab-panel-1">
       <div class="form-group">
-        <label>Trigger Type</label>
+        <label for="cf-trigger-type">Trigger Type</label>
         <select id="cf-trigger-type" class="form-control" onchange="updateTriggerFields()">
           <option value="Once"          ${prefillTrigger==='Once'          ?'selected':''}>Once — Run one time at a specific date/time</option>
           <option value="Daily"         ${prefillTrigger==='Daily'         ?'selected':''}>Daily — Run every N days</option>
@@ -1701,7 +1739,7 @@ async function openCreateDialog(prefill = {}) {
       <!-- Once -->
       <div id="tf-once">
         <div class="form-group">
-          <label>Date / Time *</label>
+          <label for="cf-datetime">Date / Time *</label>
           <input type="datetime-local" id="cf-datetime" class="form-control" value="${escHtml(prefill.trigger_datetime || prefill.trigger_value || '')}" />
           <div class="form-error" id="err-datetime">A start date/time is required</div>
         </div>
@@ -1710,12 +1748,12 @@ async function openCreateDialog(prefill = {}) {
       <!-- Daily -->
       <div id="tf-daily" style="display:none">
         <div class="form-group">
-          <label>Start Time *</label>
+          <label for="cf-daily-time">Start Time *</label>
           <input type="time" id="cf-daily-time" class="form-control" value="${prefillTrigger==='Daily' ? escHtml(prefill.trigger_value||'08:00') : '08:00'}" />
           <div class="form-error" id="err-daily-time">Start time is required</div>
         </div>
         <div class="form-group">
-          <label>Every N Days</label>
+          <label for="cf-days-interval">Every N Days</label>
           <input type="number" id="cf-days-interval" class="form-control" min="1" max="365" value="${prefill.days_interval || 1}" />
           <div class="form-hint">Task runs every <em>N</em> days starting at the chosen time</div>
           <div class="form-error" id="err-days-interval">Days interval must be at least 1</div>
@@ -1725,11 +1763,11 @@ async function openCreateDialog(prefill = {}) {
       <!-- Weekly -->
       <div id="tf-weekly" style="display:none">
         <div class="form-group">
-          <label>Start Time *</label>
+          <label for="cf-weekly-time">Start Time *</label>
           <input type="time" id="cf-weekly-time" class="form-control" value="${prefillTrigger==='Weekly' ? escHtml(prefill.trigger_value||'08:00') : '08:00'}" />
         </div>
         <div class="form-group">
-          <label>Repeat every N weeks</label>
+          <label for="cf-weeks-interval">Repeat every N weeks</label>
           <input type="number" id="cf-weeks-interval" class="form-control" min="1" max="52" value="${prefill.days_interval || 1}" />
           <div class="form-hint">Task will run weekly starting at the chosen time</div>
         </div>
@@ -1738,11 +1776,11 @@ async function openCreateDialog(prefill = {}) {
       <!-- Monthly -->
       <div id="tf-monthly" style="display:none">
         <div class="form-group">
-          <label>Start Time *</label>
+          <label for="cf-monthly-time">Start Time *</label>
           <input type="time" id="cf-monthly-time" class="form-control" value="${prefillTrigger==='Monthly' ? escHtml(prefill.trigger_value||'08:00') : '08:00'}" />
         </div>
         <div class="form-group">
-          <label>Day of Month (1–31)</label>
+          <label for="cf-month-day">Day of Month (1–31)</label>
           <input type="number" id="cf-month-day" class="form-control" min="1" max="31" value="${prefill.days_interval || 1}" />
           <div class="form-error" id="err-month-day">Day must be between 1 and 31</div>
         </div>
@@ -1761,7 +1799,7 @@ async function openCreateDialog(prefill = {}) {
       <!-- Idle -->
       <div id="tf-idle" style="display:none">
         <div class="form-group">
-          <label>Wait for idle (minutes)</label>
+          <label for="cf-idle-min">Wait for idle (minutes)</label>
           <input type="number" id="cf-idle-min" class="form-control" min="1" max="999" value="${prefill.days_interval || 10}" />
           <div class="form-hint">The task runs when the system has been idle for this many minutes</div>
           <div class="form-error" id="err-idle">Idle time must be at least 1 minute</div>
@@ -1799,7 +1837,7 @@ async function openCreateDialog(prefill = {}) {
           <div style="font-size:11px;color:var(--text3);margin-bottom:6px">Quick pick:</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             ${[['15m','15','Minutes'],['30m','30','Minutes'],['1h','1','Hours'],['2h','2','Hours'],['4h','4','Hours'],['6h','6','Hours'],['8h','8','Hours'],['12h','12','Hours']]
-              .map(([label,v,u])=>`<button class="btn" type="button" onclick="setIntervalQuick(${v},'${u}')">Every ${label}</button>`).join('')}
+              .map(([label,v,u])=>`<button class="btn" type="button" onclick="setIntervalQuick(${escHtml(JSON.stringify(v))},${escHtml(JSON.stringify(u))})">Every ${label}</button>`).join('')}
           </div>
         </div>
       </div>
@@ -1821,7 +1859,7 @@ async function openCreateDialog(prefill = {}) {
     <!-- ── Tab 2: Action ── -->
     <div class="modal-tab-panel" id="tab-panel-2">
       <div class="form-group">
-        <label>Action Type</label>
+        <label for="cf-action-type">Action Type</label>
         <select id="cf-action-type" class="form-control" onchange="updateActionFields()">
           <option value="program"    ${prefillAction==='program'    ?'selected':''}>Program / Script — plain executable</option>
           <option value="batch"      ${prefillAction==='batch'      ?'selected':''}>Batch File (.bat / .cmd)</option>
@@ -1898,7 +1936,7 @@ async function openCreateDialog(prefill = {}) {
       <div style="font-weight:600;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:0 0 6px">Timing / Limits</div>
 
       <div class="form-group">
-        <label>Execution Time Limit</label>
+        <label for="cf-exec-limit">Execution Time Limit</label>
         <select id="cf-exec-limit" class="form-control" onchange="toggleCustomInput('cf-exec-limit','cf-exec-limit-custom')">
           <option value="PT0S">Unlimited</option>
           <option value="PT1H">1 hour</option>
@@ -1913,7 +1951,7 @@ async function openCreateDialog(prefill = {}) {
       </div>
 
       <div class="form-group">
-        <label>Random Delay</label>
+        <label for="cf-random-delay">Random Delay</label>
         <select id="cf-random-delay" class="form-control" onchange="toggleCustomInput('cf-random-delay','cf-random-delay-custom')">
           <option value="">None</option>
           <option value="PT1M">1 minute</option>
@@ -1927,7 +1965,7 @@ async function openCreateDialog(prefill = {}) {
       </div>
 
       <div class="form-group">
-        <label>Trigger Expiry (End Boundary)</label>
+        <label for="cf-end-boundary">Trigger Expiry (End Boundary)</label>
         <input type="datetime-local" id="cf-end-boundary" class="form-control" />
         <div class="form-hint">Leave blank for no expiry</div>
       </div>
@@ -1935,7 +1973,7 @@ async function openCreateDialog(prefill = {}) {
       <div style="font-weight:600;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:8px 0 6px">Repetition</div>
 
       <div class="form-group">
-        <label>Repeat Every</label>
+        <label for="cf-rep-interval">Repeat Every</label>
         <select id="cf-rep-interval" class="form-control" onchange="toggleCustomInput('cf-rep-interval','cf-rep-interval-custom')">
           <option value="">None (no repetition)</option>
           <option value="PT5M">5 minutes</option>
@@ -1951,7 +1989,7 @@ async function openCreateDialog(prefill = {}) {
       </div>
 
       <div class="form-group">
-        <label>Repetition Duration</label>
+        <label for="cf-rep-duration">Repetition Duration</label>
         <select id="cf-rep-duration" class="form-control" onchange="toggleCustomInput('cf-rep-duration','cf-rep-duration-custom')">
           <option value="">Indefinitely</option>
           <option value="PT1H">1 hour</option>
@@ -2005,14 +2043,14 @@ async function openCreateDialog(prefill = {}) {
       </div>
 
       <div id="adv-monthly-days-row" class="form-group" style="display:none">
-        <label>Days of Month</label>
+        <label for="cf-days-of-month">Days of Month</label>
         <input type="text" id="cf-days-of-month" class="form-control" placeholder="e.g. 1, 15, 28  (comma-separated, 1–31)" />
         <div class="form-hint">Overrides the "Day of Month" field in the Trigger tab when set</div>
       </div>
 
       <!-- Boot / Logon / Session delay row (shown when trigger requires delay) -->
       <div id="adv-boot-delay-row" class="form-group" style="display:none">
-        <label>Startup Delay</label>
+        <label for="cf-boot-delay">Startup Delay</label>
         <select id="cf-boot-delay" class="form-control" onchange="toggleCustomInput('cf-boot-delay','cf-boot-delay-custom')">
           <option value="">No delay</option>
           <option value="PT30S">30 seconds</option>
@@ -2061,7 +2099,7 @@ async function openCreateDialog(prefill = {}) {
       <div style="font-weight:600;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:8px 0 6px">Settings</div>
 
       <div class="form-group">
-        <label>Thread Priority</label>
+        <label for="cf-priority">Thread Priority</label>
         <select id="cf-priority" class="form-control">
           <option value="0"  ${prefillPriority === 0  ? 'selected' : ''}>0 — Critical (highest CPU priority)</option>
           <option value="1"  ${prefillPriority === 1  ? 'selected' : ''}>1</option>
@@ -2415,7 +2453,7 @@ async function openXmlEditor(task) {
       in place — it is not duplicated or moved.
     </div>
     <div class="form-group">
-      <label>Task XML</label>
+      <label for="xe-xml">Task XML</label>
       <textarea id="xe-xml" class="form-control" rows="22" spellcheck="false"
                 style="font-family:monospace;font-size:11px;white-space:pre">${escHtml(xml)}</textarea>
       <div class="form-error" id="xe-err" style="display:none"></div>
@@ -3100,12 +3138,12 @@ async function importXml() {
 
   const bodyHtml = `
     <div class="form-group">
-      <label>Task Name *</label>
+      <label for="ix-name">Task Name *</label>
       <input type="text" id="ix-name" class="form-control" placeholder="MyImportedTask" />
       <div class="form-error" id="err-ix-name">Task name is required</div>
     </div>
     <div class="form-group">
-      <label>Folder</label>
+      <label for="ix-folder">Folder</label>
       <select id="ix-folder" class="form-control">${folderOptions}</select>
     </div>
     <details class="form-group" style="cursor:pointer">
@@ -3206,22 +3244,26 @@ function showCtxMenu(event, task) {
   ctxTask = task;
 
   const menu = document.getElementById('ctx-menu');
+  // a11y-9: expose menu semantics to assistive tech (role=menu + labelled, items
+  // as role=menuitem). Separators get role=separator.
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'Task options');
   menu.innerHTML = `
-    <div class="ctx-item" data-ctx-action="edit">✏️ Edit</div>
-    <div class="ctx-item" data-ctx-action="clone">📋 Clone</div>
-    <div class="ctx-sep"></div>
-    <div class="ctx-item" data-ctx-action="run">▶ Run</div>
-    <div class="ctx-item" data-ctx-action="stop">⏹ Stop</div>
-    <div class="ctx-item" data-ctx-action="toggle">${task.enabled ? '⏸ Disable' : '▶ Enable'}</div>
-    <div class="ctx-sep"></div>
-    <div class="ctx-item" data-ctx-action="note">📝 ${getNoteForTask(task.path) ? 'Edit Note' : 'Add Note'}</div>
-    <div class="ctx-item" data-ctx-action="ps">⚡ Copy as PowerShell</div>
-    <div class="ctx-item" data-ctx-action="copy-path">📋 Copy Path</div>
-    <div class="ctx-item" data-ctx-action="copy-name">📋 Copy Name</div>
-    <div class="ctx-item" data-ctx-action="xml">＜/＞ Export XML</div>
-    <div class="ctx-item" data-ctx-action="edit-xml">＜/＞ Edit XML</div>
-    <div class="ctx-sep"></div>
-    <div class="ctx-item danger" data-ctx-action="delete">🗑 Delete</div>`;
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="edit">✏️ Edit</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="clone">📋 Clone</div>
+    <div class="ctx-sep" role="separator"></div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="run">▶ Run</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="stop">⏹ Stop</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="toggle">${task.enabled ? '⏸ Disable' : '▶ Enable'}</div>
+    <div class="ctx-sep" role="separator"></div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="note">📝 ${getNoteForTask(task.path) ? 'Edit Note' : 'Add Note'}</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="ps">⚡ Copy as PowerShell</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="copy-path">📋 Copy Path</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="copy-name">📋 Copy Name</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="xml">＜/＞ Export XML</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="edit-xml">＜/＞ Edit XML</div>
+    <div class="ctx-sep" role="separator"></div>
+    <div class="ctx-item danger" role="menuitem" tabindex="-1" data-ctx-action="delete">🗑 Delete</div>`;
 
   // Wire up each item via event delegation on ctxTask (safe — no string embedding)
   menu.onclick = e => {
@@ -3988,12 +4030,12 @@ function openBulkFindReplace() {
              arguments, and working directory of every task.
            </div>
            <div class="form-group">
-             <label>Find</label>
+             <label for="frp-find">Find</label>
              <input type="text" id="frp-find" class="form-control" placeholder="e.g. C:\\Old\\Scripts\\" autocomplete="off" />
              <div class="form-error" id="err-frp-find" style="display:none">Find text is required</div>
            </div>
            <div class="form-group">
-             <label>Replace with</label>
+             <label for="frp-replace">Replace with</label>
              <input type="text" id="frp-replace" class="form-control" placeholder="e.g. D:\\NewLocation\\Scripts\\" autocomplete="off" />
            </div>
            <div class="form-group">
@@ -4259,15 +4301,15 @@ function openSaveAsTemplateDialog(task) {
              this template will pre-fill the trigger and action settings.
            </div>
            <div class="form-group">
-             <label>Template Name *</label>
+             <label for="tpl-name">Template Name *</label>
              <input type="text" id="tpl-name" class="form-control" maxlength="80" value="${escHtml(task.name)}" />
            </div>
            <div class="form-group">
-             <label>Description</label>
+             <label for="tpl-desc">Description</label>
              <input type="text" id="tpl-desc" class="form-control" maxlength="200" value="${escHtml(task.description || 'Custom template based on ' + task.name)}" />
            </div>
            <div class="form-group">
-             <label>Icon (emoji)</label>
+             <label for="tpl-icon">Icon (emoji)</label>
              <input type="text" id="tpl-icon" class="form-control" maxlength="4" style="max-width:80px;text-align:center;font-size:18px" value="${defaultIcon}" />
              <div style="font-size:11px;color:var(--text3);margin-top:4px">Click to change. Suggestions: ⭐ 🔧 ⚙️ 📊 🚀 💼 📁 ⏰</div>
            </div>
@@ -4493,7 +4535,7 @@ function renderSettings() {
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             ${accentColors.map(c => `
               <button class="color-swatch ${c===curAccent?'active':''}" style="background:${c}"
-                      onclick="applyAccentColor('${c}')" title="${c}"></button>`).join('')}
+                      onclick="applyAccentColor(${escHtml(JSON.stringify(c))})" title="${escHtml(c)}"></button>`).join('')}
             <input type="color" id="s-accent-custom" value="${curAccent}"
                    oninput="applyAccentColor(this.value)" style="width:36px;height:36px;padding:2px;border-radius:6px;border:1px solid var(--border);cursor:pointer;background:transparent" />
           </div>
@@ -5972,9 +6014,22 @@ function compareSelectedTasks() {
 
 async function bulkRun() {
   const paths = [..._selectedPaths];
+  if (!paths.length) return;
+  // ux-3: each run_task is a COM round-trip, so a 20+ task selection can take
+  // several seconds. Show an in-flight progress toast and disable the bulk toolbar
+  // so the user can't double-trigger, rather than leaving the UI silent until done.
+  const bar = document.getElementById('bulk-toolbar');
+  const btns = bar ? [...bar.querySelectorAll('button')] : [];
+  btns.forEach(b => b.disabled = true);
+  const t = showToast(`Running 0 of ${paths.length}…`, 'info', { sticky: true });
   let ok = 0, fail = 0;
-  for (const path of paths) {
-    try { await invoke('run_task', { path }); ok++; } catch { fail++; }
+  try {
+    for (const path of paths) {
+      try { await invoke('run_task', { path }); ok++; } catch { fail++; }
+      if (t) t.textContent = `Running ${ok + fail} of ${paths.length}…`;
+    }
+  } finally {
+    btns.forEach(b => b.disabled = false);
   }
   showToast(`Run: ${ok} ok, ${fail} failed`, ok > 0 ? 'success' : 'error');
   appendAuditLog('bulk_run', `${paths.length} tasks`, paths.join(', '));
@@ -6201,7 +6256,7 @@ async function cloneTask(task) {
 function openCreateFolderDialog(parentPath) {
   const body = `
     <div class="form-group">
-      <label>Folder Name *</label>
+      <label for="new-folder-name">Folder Name *</label>
       <input type="text" id="new-folder-name" class="form-control" placeholder="MyFolder" />
       <div class="form-hint">Will be created under: ${escHtml(parentPath)}</div>
     </div>`;
@@ -6335,16 +6390,16 @@ function openHistorySearch() {
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <div class="form-group">
-          <label>Start (local time)</label>
+          <label for="hs-start">Start (local time)</label>
           <input type="datetime-local" id="hs-start" class="form-control" value="${fmtLocal(yesterday)}" />
         </div>
         <div class="form-group">
-          <label>End (local time)</label>
+          <label for="hs-end">End (local time)</label>
           <input type="datetime-local" id="hs-end" class="form-control" value="${fmtLocal(now)}" />
         </div>
       </div>
       <div class="form-group">
-        <label>Filter by text (task path, error message, etc. — optional)</label>
+        <label for="hs-query">Filter by text (task path, error message, etc. — optional)</label>
         <input type="text" id="hs-query" class="form-control" placeholder="e.g. PS4, backup, error" />
       </div>
       <div class="form-group">
@@ -6368,7 +6423,7 @@ function openHistorySearch() {
         </div>
       </div>
       <div class="form-group">
-        <label>Max results</label>
+        <label for="hs-max">Max results</label>
         <input type="number" id="hs-max" class="form-control" min="10" max="1000" value="200" style="max-width:140px" />
       </div>
       <div id="hs-results" style="min-height:120px"></div>
@@ -6770,6 +6825,7 @@ function openScriptEditor() {
   const langNames = { batch:'Batch', powershell:'PowerShell', python:'Python', vbscript:'VBScript' };
   if (titleEl) titleEl.textContent = 'Edit Script' + (path ? ': ' + path.split('\\').pop() : '');
   if (langEl)  langEl.textContent  = langNames[type] || type;
+  if (overlay && overlay.style.display !== 'flex') setBackgroundInert(true); // a11y-5
   if (overlay) overlay.style.display = 'flex';
 
   const contentEl = document.getElementById('script-editor-content');
@@ -6791,6 +6847,7 @@ function openScriptEditor() {
 
 function closeScriptEditor() {
   const overlay = document.getElementById('script-editor-overlay');
+  if (overlay && overlay.style.display !== 'none') setBackgroundInert(false); // a11y-5
   if (overlay) overlay.style.display = 'none';
 }
 
@@ -7017,15 +7074,17 @@ function renderSchedulePreview() {
         .filter(k => document.getElementById('cf-dow-' + k)?.checked)
         .map(k => dowMap[k]);
 
-    // Day-of-month: 31 checkboxes cf-dom-1..cf-dom-31 (if they exist)
+    // Day-of-month from the single "cf-month-day" input. (The legacy cf-dom-1..31
+    // checkboxes never existed in this dialog, so don't look for them.)
+    // js-1: mirror the SUBMIT-time fallback — for Monthly an empty field means
+    // "day 1" (see submitCreateTask / scheduler.rs), NOT "never fire". Without this
+    // the preview falsely warned "this trigger will never fire" for a schedule that
+    // would actually run on the 1st.
     const daysOfMonth = [];
-    for (let d = 1; d <= 31; d++) {
-        if (document.getElementById('cf-dom-' + d)?.checked) daysOfMonth.push(d);
-    }
-    // Fallback to single day-of-month input "cf-month-day"
-    if (daysOfMonth.length === 0) {
+    {
         const md = document.getElementById('cf-month-day')?.value;
-        if (md) daysOfMonth.push(parseInt(md, 10));
+        const day = md ? parseInt(md, 10) : (triggerType === 'Monthly' ? 1 : NaN);
+        if (Number.isInteger(day) && day >= 1 && day <= 31) daysOfMonth.push(day);
     }
 
     // Month checkboxes: cf-moy-jan, cf-moy-feb, ...
@@ -7280,12 +7339,14 @@ function showHelpModal() {
     </div>`;
   const overlay = document.getElementById('help-modal-overlay');
   const bodyEl  = document.getElementById('help-modal-body');
+  if (overlay && overlay.style.display !== 'flex') setBackgroundInert(true); // a11y-5
   if (overlay) overlay.style.display = 'flex';
   if (bodyEl)  bodyEl.innerHTML = body;
 }
 
 function closeHelpModal() {
   const overlay = document.getElementById('help-modal-overlay');
+  if (overlay && overlay.style.display !== 'none') setBackgroundInert(false); // a11y-5
   if (overlay) overlay.style.display = 'none';
 }
 
@@ -7876,7 +7937,7 @@ function openAddTagDialog(path, containerId) {
   openModal('🏷 Add Tag',
     `<div style="padding:8px 0">
        <div class="form-group">
-         <label>Tag name</label>
+         <label for="new-tag-input">Tag name</label>
          <input type="text" id="new-tag-input" class="form-control" placeholder="e.g. backup, nightly, critical" />
        </div>
        ${suggestions}
@@ -8299,7 +8360,7 @@ function openNoteDialog(task) {
     `<div style="padding:0 0 8px">
        <div style="font-size:12px;font-weight:600;margin-bottom:10px;color:var(--text2)">${escHtml(task.name)}</div>
        <div class="form-group">
-         <label>Note</label>
+         <label for="task-note-input">Note</label>
          <textarea id="task-note-input" class="form-control" rows="5" placeholder="Add a note about this task… (stored locally, not in Windows Task Scheduler)">${escHtml(current)}</textarea>
        </div>
      </div>`,
@@ -8886,10 +8947,16 @@ function renderProcList() {
             renderProcList();
             return;
         }
+        const prevPid = _procSelectedPid;
         _procSelectedPid = pid;
         // Reset cached detail data when selection changes
         _procDetailDataCache = { modules: null, connections: null, lastModulesPid: null, lastConnsPid: null };
-        renderProcList();        // updates row highlight
+        // perf-4: only two rows change visually on selection, so toggle them in
+        // place instead of rebuilding the whole list (renderProcList does a full
+        // innerHTML of up to 1000 grid rows — wasteful for a single highlight move).
+        if (prevPid !== null && prevPid !== pid)
+            setProcRowSelected(body.querySelector(`.proc-row[data-pid="${prevPid}"]`), false);
+        setProcRowSelected(row, true);
         renderProcDetailPane();
     };
     // Right-click menu
@@ -9066,6 +9133,24 @@ function renderProcRow(p, depth, hasChildren) {
              style="display:grid;grid-template-columns:${procGridTemplate()};gap:8px;padding:6px 12px;border-bottom:1px solid rgba(31,38,64,.3);cursor:pointer;${bgStyle}align-items:center">
           ${cellHtmls}
         </div>`;
+}
+
+// perf-4: flip a single process row's selected styling without re-rendering the
+// whole list. Mirrors the inline bgStyle in renderProcRow; on deselect it restores
+// the row's highlight-rule tint (if any) so colour rules survive a selection move.
+function setProcRowSelected(rowEl, selected) {
+    if (!rowEl) return;
+    if (selected) {
+        rowEl.style.background = 'var(--accent-glow2)';
+        rowEl.style.outline = '1px solid var(--accent)';
+        rowEl.style.outlineOffset = '-1px';
+    } else {
+        const pid = parseInt(rowEl.dataset.pid, 10);
+        const p = (_procData || []).find(x => x.pid === pid);
+        rowEl.style.background = (p && highlightForProc(p)) || '';
+        rowEl.style.outline = '';
+        rowEl.style.outlineOffset = '';
+    }
 }
 
 // Render the right-side detail pane based on _procSelectedPid + _procDetailTab.
@@ -9990,18 +10075,20 @@ function showProcContextMenu(e, pid) {
     if (!ctxMenu) return;
     const isWatched = _procWatchlist.has(pid);
     const safeName = escHtml(JSON.stringify(proc.name));
+    ctxMenu.setAttribute('role', 'menu');                  // a11y-9
+    ctxMenu.setAttribute('aria-label', 'Process options');
     ctxMenu.innerHTML = `
-      <div class="ctx-item" onclick="procSelectPid(${pid}); hideCtxMenu();">📋 Show details</div>
-      <div class="ctx-item" onclick="procToggleWatch(${pid}); hideCtxMenu();">${isWatched ? '★ Unwatch' : '☆ Add to watchlist'}</div>
-      <div class="ctx-item" onclick="procActionCopyCmd(${pid}); hideCtxMenu();">📄 Copy command line</div>
-      <div class="ctx-item" onclick="procActionCopyJson(${pid}); hideCtxMenu();">📋 Copy as JSON</div>
-      <div class="ctx-item" onclick="procActionOpenLocation(${escHtml(JSON.stringify(proc.exe_path || ''))}); hideCtxMenu();">📁 Open file location</div>
-      <div class="ctx-item" onclick="procActionPriority(${pid}); hideCtxMenu();">⚙ Set priority…</div>
-      <div class="ctx-item" onclick="procActionAffinity(${pid}); hideCtxMenu();">🎚 Set CPU affinity…</div>
-      <div class="ctx-item" onclick="procActionSuspend(${pid}); hideCtxMenu();">⏸ Suspend</div>
-      <div class="ctx-item" onclick="procActionResume(${pid}); hideCtxMenu();">▶ Resume</div>
-      <div class="ctx-item danger" onclick="confirmKillProcess(${pid}, ${safeName}); hideCtxMenu();">⏹ Kill process</div>
-      <div class="ctx-item danger" onclick="confirmKillProcessTree(${pid}, ${safeName}); hideCtxMenu();">💀 Kill process tree…</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procSelectPid(${pid}); hideCtxMenu();">📋 Show details</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procToggleWatch(${pid}); hideCtxMenu();">${isWatched ? '★ Unwatch' : '☆ Add to watchlist'}</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionCopyCmd(${pid}); hideCtxMenu();">📄 Copy command line</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionCopyJson(${pid}); hideCtxMenu();">📋 Copy as JSON</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionOpenLocation(${escHtml(JSON.stringify(proc.exe_path || ''))}); hideCtxMenu();">📁 Open file location</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionPriority(${pid}); hideCtxMenu();">⚙ Set priority…</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionAffinity(${pid}); hideCtxMenu();">🎚 Set CPU affinity…</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionSuspend(${pid}); hideCtxMenu();">⏸ Suspend</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionResume(${pid}); hideCtxMenu();">▶ Resume</div>
+      <div class="ctx-item danger" role="menuitem" tabindex="-1" onclick="confirmKillProcess(${pid}, ${safeName}); hideCtxMenu();">⏹ Kill process</div>
+      <div class="ctx-item danger" role="menuitem" tabindex="-1" onclick="confirmKillProcessTree(${pid}, ${safeName}); hideCtxMenu();">💀 Kill process tree…</div>
     `;
     ctxMenu.style.display = 'block';
     ctxMenu.style.left = e.pageX + 'px';

@@ -4,6 +4,68 @@ All notable changes to WinTaskPro are documented in this file.
 Format follows [Conventional Commits](https://www.conventionalcommits.org/) style.
 
 ---
+## [1.16.1] — 2026-06-21 — Round-2 audit: updater fix, UI responsiveness, accessibility & visual polish
+
+A second multi-agent deep-dive audit (73 raw findings → 24 confirmed after
+adversarial verification), then fixes across the Rust backend and JS frontend plus
+a visual beautification pass. Verified with `cargo check` (clean) and `node --check`
+(clean). Version bumped 1.16.0 → 1.16.1 across `package.json` / `Cargo.toml` /
+`tauri.conf.json` / `index.html` / `app.manifest`.
+
+### Fixed — backend (Rust)
+- **`src-tauri/src/main.rs` `download_and_install_update`: silent self-update failure on
+  usernames with a space (HIGH, `cmd-1`).** The swap helper was launched as
+  `cmd.exe /C "<bat>" <pid> "<new>" "<cur>"`. When `%TEMP%` contains a space (any
+  username like "John Doe"), Rust quotes both the `.bat` and the new-exe path, giving
+  cmd 2+ quoted tokens — cmd's `/C` rule then strips the OUTER quote pair and splits the
+  `.bat` path at its first space, so the swap never runs and the update is silently lost
+  (the app exits right after). Fix: wrap the whole post-`/C` string in one extra outer
+  quote pair via `raw_arg`, making cmd's strip a no-op while each inner-quoted path
+  survives. Reproduced and verified.
+  > GOTCHA: Windows paths can't contain `"`, so there's no quote-injection risk here.
+- **`get_running_tasks` / `get_task_history`: synchronous COM froze the UI (`perf-1`,
+  `perf-2`).** Both ran blocking `ITaskService` COM calls on the main/UI thread —
+  `get_running_tasks` is polled every 3 s by the Live Monitor. Converted to
+  `async` + `spawn_blocking` with a throwaway per-call STA engine, matching the
+  `get_all_tasks` pattern, so the WebView stays responsive.
+- **Removed orphaned `src-tauri/src/log.rs` (`deadcode-1`/`deadcode-2`).** Never declared
+  with `mod log;` (superseded by `devlog.rs`); dead and a latent macro-collision footgun.
+
+### Fixed — frontend (JS)
+- **Activity digest over-reported failures (`feat-3`).** `fpSummariseDigest` counted event
+  ID 111 (*task terminated* — fires on user-stop, time-limit, and shutdown too) as a
+  failure. Now only 103 (*action failed*) counts as failed; 111 is tracked and shown as a
+  neutral "terminated" stat.
+- **Monthly trigger preview falsely warned "never fire" (`js-1`).** `renderSchedulePreview`
+  now mirrors the submit-time day-1 fallback (and stops probing checkboxes that never
+  existed), so the preview matches what actually gets created.
+
+### Accessibility
+- Icon-only Run/Stop/Delete row buttons now have `aria-label`s (`a11y-1`).
+- Sort headers announce state via `aria-sort` (+ a directional ↑/↓ arrow on the active
+  column) (`a11y-4`).
+- Task / folder / process context menus expose `role="menu"` + `role="menuitem"` (`a11y-9`).
+- Open modals inert the background (`#root-wrap` `aria-hidden`, stack-counted) as a robust
+  complement to `aria-modal` (`a11y-5`).
+- Delete-dialog warning/danger text uses the theme-aware AA-tuned tokens instead of raw
+  status colours that failed contrast on the light theme (`a11y-11`).
+
+### UX & visual polish
+- The three detail-panel run actions are now distinguishable: **Run** gained a tooltip and
+  **Run Now** a distinct ⚡ icon (`ux-1`).
+- **Result codes** show their plain-English meaning inline, e.g. `Error (0x80070002) — File
+  not found`, without needing the `?` popover (`ux-4`).
+- **Bulk Run** shows live "Running N of M…" progress and disables the toolbar while in
+  flight (`ux-3`).
+- **Process list:** selecting a row updates just the two affected rows instead of
+  rebuilding up to 1000 grid rows (`perf-4`).
+- Brighter table-row hover (`vis-3`); search box uses an SVG icon instead of an emoji
+  (`vis-15`); nav-icon glow now eases in/out (`vis-13`); modals animate out, not just in
+  (`vis-14`); subtle stat-card hover tint.
+- Rule 48 conformance: quick-pick interval and accent-colour swatches now pass inline-handler
+  args via `escHtml(JSON.stringify(...))` (`xss-1`, `xss-2`).
+
+---
 ## [1.16.0] — 2026-06-19 — Deep-dive audit: security hardening, bug fixes, accessibility, UX redesign + new features
 
 A multi-agent deep-dive audit (adversarially verified) of the whole codebase,

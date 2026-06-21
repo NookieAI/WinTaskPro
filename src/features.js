@@ -146,6 +146,16 @@ function fpResultHelpBadge(resultStr) {
       onclick="fpShowResultExplainer(${payload})">?</button>`;
 }
 
+// UX (ux-4): show the plain-English meaning inline next to a raw result code so
+// users grasp e.g. "Error (0x80070002) — File not found" at a glance, without
+// having to click the "?" popover. Returns '' for benign/success codes (which
+// explainResultCode already suppresses), keeping good rows clean.
+function fpResultInlineName(resultStr) {
+  const info = explainResultCode(resultStr);
+  if (!info) return '';
+  return ` <span class="result-inline-name">— ${escHtml(info.name)}</span>`;
+}
+
 function fpShowResultExplainer(resultStr) {
   const info = explainResultCode(resultStr);
   if (!info) { showToast('No explanation available for this result', 'info'); return; }
@@ -642,19 +652,24 @@ async function fpFetchDigest(hours = 24, { force = false } = {}) {
 }
 
 function fpSummariseDigest(events) {
-  let started = 0, completed = 0, failed = 0;
+  let started = 0, completed = 0, failed = 0, terminated = 0;
   const failedTasks = new Map(); // task → count
   for (const e of events) {
     const id = e.id;
     if (id === 100 || id === 200) started++;
     else if (id === 102 || id === 201) completed++;
-    else if (id === 103 || id === 111) {
+    // BUGFIX (feat-3): only 103 ("action failed to start") is a genuine failure.
+    // 111 ("task terminated") fires on normal user-stop, execution-time-limit, and
+    // shutdown too — counting it as failed over-reported failures and listed benign
+    // tasks under "Failing tasks". Track terminations separately as a neutral stat.
+    else if (id === 103) {
       failed++;
       const key = e.task || '(unknown task)';
       failedTasks.set(key, (failedTasks.get(key) || 0) + 1);
     }
+    else if (id === 111) terminated++;
   }
-  return { started, completed, failed, failedTasks };
+  return { started, completed, failed, terminated, failedTasks };
 }
 
 async function fpRenderDigestInto(targetId, hours = 24, { force = false } = {}) {
@@ -685,6 +700,7 @@ async function fpRenderDigestInto(targetId, hours = 24, { force = false } = {}) 
       <div class="fp-digest-stat"><div class="fp-digest-num">${s.started}</div><div class="fp-digest-lbl">started</div></div>
       <div class="fp-digest-stat ok"><div class="fp-digest-num">${s.completed}</div><div class="fp-digest-lbl">completed</div></div>
       <div class="fp-digest-stat ${s.failed ? 'bad' : ''}"><div class="fp-digest-num">${s.failed}</div><div class="fp-digest-lbl">failed</div></div>
+      ${s.terminated ? `<div class="fp-digest-stat" title="Tasks stopped by a user, an execution time-limit, or shutdown — not failures"><div class="fp-digest-num">${s.terminated}</div><div class="fp-digest-lbl">terminated</div></div>` : ''}
     </div>
     ${s.failed ? `<div class="fp-digest-fails"><div class="fp-digest-fails-title">Failing tasks</div>${failRows}</div>`
       : `<div class="fp-digest-allgood">✓ No failures in the last ${hours} hours</div>`}`;

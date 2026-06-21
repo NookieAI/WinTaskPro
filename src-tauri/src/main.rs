@@ -525,31 +525,42 @@ fn update_task(path: String, params: CreateTaskParams, state: State<AppState>) -
 #[cfg(not(windows))]
 fn update_task(_path: String, _params: CreateTaskParams, _state: State<AppState>) -> Result<(), String> { Err("Windows only".into()) }
 
+// PERF (perf-1): get_running_tasks runs blocking COM (ITaskService::GetRunningTasks)
+// and the Live Monitor polls it every 3s. As a SYNC command it executed on the UI
+// thread and could micro-freeze the WebView each tick. Now async + spawn_blocking
+// with a throwaway per-call STA engine (same pattern as get_all_tasks) — never the
+// shared main-thread engine, which would be an apartment violation off-thread.
 #[tauri::command]
 #[cfg(windows)]
-fn get_running_tasks(state: State<AppState>) -> Result<Vec<RunningTaskInfo>, String> {
-    let lock = state.scheduler.lock().map_err(|e| format!("State mutex poisoned: {e}"))?;
-    match lock.as_ref() {
-        Some(e) => e.get_running_tasks().map_err(|e| e.to_string()),
-        None    => Err("Run as Administrator.".into()),
-    }
+async fn get_running_tasks() -> Result<Vec<RunningTaskInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<RunningTaskInfo>, String> {
+        let engine = SchedulerEngine::new()
+            .map_err(|e| format!("Run as Administrator to access Task Scheduler. ({e})"))?;
+        engine.get_running_tasks().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Running-task query failed: {e}"))?
 }
 #[tauri::command]
 #[cfg(not(windows))]
-fn get_running_tasks(_state: State<AppState>) -> Result<Vec<String>, String> { Err("Windows only".into()) }
+async fn get_running_tasks() -> Result<Vec<String>, String> { Err("Windows only".into()) }
 
+// PERF (perf-2): same treatment — get_task_history does blocking COM
+// (GetFolder/GetTask/GetRunTimes). async + spawn_blocking + fresh STA engine.
 #[tauri::command]
 #[cfg(windows)]
-fn get_task_history(path: String, max_records: u32, state: State<AppState>) -> Result<Vec<TaskRunRecord>, String> {
-    let lock = state.scheduler.lock().map_err(|e| format!("State mutex poisoned: {e}"))?;
-    match lock.as_ref() {
-        Some(e) => e.get_task_history(&path, max_records).map_err(|e| e.to_string()),
-        None    => Err("Run as Administrator.".into()),
-    }
+async fn get_task_history(path: String, max_records: u32) -> Result<Vec<TaskRunRecord>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<TaskRunRecord>, String> {
+        let engine = SchedulerEngine::new()
+            .map_err(|e| format!("Run as Administrator to access Task Scheduler. ({e})"))?;
+        engine.get_task_history(&path, max_records).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Task history query failed: {e}"))?
 }
 #[tauri::command]
 #[cfg(not(windows))]
-fn get_task_history(_path: String, _max_records: u32, _state: State<AppState>) -> Result<Vec<String>, String> { Err("Windows only".into()) }
+async fn get_task_history(_path: String, _max_records: u32) -> Result<Vec<String>, String> { Err("Windows only".into()) }
 
 #[tauri::command]
 #[cfg(windows)]
@@ -2719,11 +2730,24 @@ fn download_and_install_update(url: String, expected_version: String) -> Result<
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     let pid = std::process::id();
+    // BUGFIX (cmd-1, HIGH): cmd.exe's /C parser strips the OUTER pair of quotes from
+    // the whole command string when it begins with a quote AND contains 2+ quoted
+    // tokens. Rust's std quotes every arg that contains a space, so when %TEMP%
+    // contains a space — i.e. ANY Windows username with a space, like "John Doe" —
+    // BOTH the .bat path and the new-exe path get quoted -> 2+ quoted tokens -> cmd
+    // strips the outer quotes and splits the .bat path at its first space
+    // ('C:\Users\John' is not recognized as a command). The swap then silently never
+    // runs and the update is lost (we exit(0) right after). Reproduced on this box.
+    // Fix: build the post-/C string as ONE raw arg wrapped in an EXTRA outer quote
+    // pair, so cmd's stripping becomes a no-op and each inner-quoted path survives.
+    // Windows paths cannot contain '"', so there is no quote-injection risk.
+    let cmd_line = format!(
+        "\"\"{}\" {} \"{}\" \"{}\"\"",
+        swap_str, pid, new_exe_str, cur_exe_str
+    );
     let child = Command::new("cmd.exe")
-        .args(["/C", &swap_str])
-        .arg(format!("{}", pid))
-        .arg(&new_exe_str)
-        .arg(&cur_exe_str)
+        .arg("/C")
+        .raw_arg(&cmd_line)
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
 

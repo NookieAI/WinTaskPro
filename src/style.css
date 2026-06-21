@@ -117,7 +117,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; }
      to --text2 (~7:1) so sidebar nav is comfortably readable at a glance.
      Hover/active escalate further so the click-feedback gradient is preserved. */
   cursor: pointer; color: var(--text2); border-left: 3px solid transparent;
-  transition: background .12s, color .12s; user-select: none;
+  /* vis-13: include `filter` so the active nav-icon glow (line below) eases in/out
+     on activation instead of snapping. */
+  transition: background .12s, color .12s, filter .18s, border-left-color .12s; user-select: none;
 }
 .nav-item:hover  { background: var(--hover-overlay); color: var(--text); }
 .nav-item.active {
@@ -214,9 +216,11 @@ html, body { width: 100%; height: 100%; overflow: hidden; }
   background: var(--bg2); border: 1px solid var(--border);
   border-radius: var(--radius-xl); padding: 18px 16px;
   min-width: 0; overflow: hidden; position: relative;
-  transition: border-color .2s, transform .18s, box-shadow .2s;
+  transition: border-color .2s, transform .18s, box-shadow .2s, background .2s;
 }
-.stat-card:hover { transform: translateY(-2px); box-shadow: 0 10px 32px rgba(0,0,0,.4); border-color: var(--border2); }
+/* vis-13: a faint accent tint on hover, consistent with the failed-card's existing
+   tinted hover — gives the cards a touch more depth without leaving the dark theme. */
+.stat-card:hover { transform: translateY(-2px); box-shadow: 0 10px 32px rgba(0,0,0,.4); border-color: var(--border2); background: linear-gradient(180deg, rgba(79,142,247,.04), var(--bg2)); }
 .stat-card::before {
   content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
   background: var(--border2); border-radius: var(--radius-xl) var(--radius-xl) 0 0;
@@ -295,11 +299,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; }
   position: sticky; top: 0; z-index: 2; transition: color .12s;
 }
 #task-table thead th:hover { color: var(--text2); }
-.sort-icon { opacity: .3; font-size: 11px; margin-left: 3px; }
+.sort-icon { opacity: .3; font-size: 11px; margin-left: 3px; transition: opacity .15s, color .15s; }
+/* a11y-4 / beautify: the active sort column gets a brighter, accent-tinted arrow. */
+#task-table thead th[aria-sort="ascending"] .sort-icon,
+#task-table thead th[aria-sort="descending"] .sort-icon { opacity: .95; color: var(--accent); }
 
 #task-table tbody tr { border-bottom: 1px solid rgba(31,38,64,.55); cursor: pointer; transition: background .1s; }
-#task-table tbody tr:hover    { background: rgba(79,142,247,.04); }
+/* vis-3: 4% accent tint over the near-black base was almost invisible; 7% is
+   clearly perceptible yet still distinct from the 10% selected state. */
+#task-table tbody tr:hover    { background: rgba(79,142,247,.07); }
 #task-table tbody tr.selected { background: rgba(79,142,247,.10); }
+/* ux-4: the inline plain-English result name sits muted next to the raw code. */
+.result-inline-name { color: var(--text2); font-size: 12px; font-weight: 400; }
 #task-table td { padding: 10px 12px; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-name { font-weight: 600; color: var(--text); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .task-path { display: block; font-size: 11.5px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
@@ -429,6 +440,12 @@ select.form-control   { cursor: pointer; }
   animation: modalIn .2s cubic-bezier(.34,1.28,.64,1);
 }
 @keyframes modalIn { from { opacity: 0; transform: scale(.96) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+/* vis-14: exit animation. closeModal() adds .closing (which keeps the overlay
+   displayed since .show is removed) for the animation's duration, then clears it. */
+@keyframes modalOut { from { opacity: 1; transform: scale(1) translateY(0); } to { opacity: 0; transform: scale(.96) translateY(8px); } }
+@keyframes overlayFadeOut { from { opacity: 1; } to { opacity: 0; } }
+#modal-overlay.closing { display: flex; animation: overlayFadeOut .16s ease forwards; }
+#modal-overlay.closing #modal-box { animation: modalOut .16s cubic-bezier(.4,0,.2,1) forwards; }
 #modal-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 16px 18px; border-bottom: 1px solid var(--border);
@@ -491,7 +508,10 @@ select.form-control   { cursor: pointer; }
 #toast.show.info    { border-color: rgba(79,142,247,.35); color: var(--text2); }
 
 /* ── Search & filter ──────────────────────────────────────────────────────── */
-#search-input { background: var(--bg3); border: 1px solid var(--border2); border-radius: var(--radius); color: var(--text); padding: 7px 30px 7px 12px; font-size: 13px; outline: none; font-family: inherit; transition: border-color .15s, box-shadow .15s; width: 240px; min-width: 130px; }
+#search-input { background: var(--bg3); border: 1px solid var(--border2); border-radius: var(--radius); color: var(--text); padding: 7px 30px 7px 32px; font-size: 13px; outline: none; font-family: inherit; transition: border-color .15s, box-shadow .15s; width: 240px; min-width: 130px; }
+/* vis-15: monochrome SVG search glyph replacing the emoji placeholder, matching
+   the rest of the icon system. pointer-events:none so clicks pass to the input. */
+.search-ico { position: absolute; left: 11px; width: 15px; height: 15px; color: var(--text3); pointer-events: none; }
 #status-filter { background: var(--bg3); border: 1px solid var(--border2); border-radius: var(--radius); color: var(--text); padding: 6px 10px; font-size: 12px; outline: none; font-family: inherit; transition: border-color .15s, box-shadow .15s; flex-shrink: 0; }
 #search-input:focus, #status-filter:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,142,247,.10); }
 
