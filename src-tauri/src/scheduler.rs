@@ -468,7 +468,10 @@ unsafe fn apply_triggers_to_definition(defn: &ITaskDefinition, p: &CreateTaskPar
             let wi = if p.weeks_interval > 0 { p.weeks_interval } else { p.days_interval.max(1) };
             unsafe { wt.SetWeeksInterval(wi.max(1).min(52) as i16)?; }
             if p.days_of_week > 0 {
-                unsafe { let _ = wt.SetDaysOfWeek(p.days_of_week as i16); }
+                // Mask to the valid 7-bit day set (Sun=1…Sat=64) before the
+                // narrowing i16 cast — an out-of-range IPC value with bit 15+
+                // set would otherwise sign-flip into a bogus day selection.
+                unsafe { let _ = wt.SetDaysOfWeek((p.days_of_week & 0x7F) as i16); }
             }
             if !p.random_delay.is_empty() {
                 unsafe { let _ = wt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }
@@ -478,13 +481,16 @@ unsafe fn apply_triggers_to_definition(defn: &ITaskDefinition, p: &CreateTaskPar
     if ttype == TASK_TRIGGER_MONTHLY {
         if let Ok(mt) = trigger.cast::<IMonthlyTrigger>() {
             if p.days_of_month > 0 {
-                unsafe { let _ = mt.SetDaysOfMonth(p.days_of_month as i32); }
+                // Mask to the valid 31-day bitfield before the cast.
+                unsafe { let _ = mt.SetDaysOfMonth((p.days_of_month & 0x7FFF_FFFF) as i32); }
             } else {
                 let day_bit = 1i32 << ((p.days_interval.max(1).min(31) - 1) as i32);
                 unsafe { let _ = mt.SetDaysOfMonth(day_bit); }
             }
             if p.months_of_year > 0 {
-                unsafe { let _ = mt.SetMonthsOfYear(p.months_of_year as i16); }
+                // Mask to the valid 12-month bitfield (Jan=1…Dec=2048) before
+                // the narrowing i16 cast — any bit ≥ 15 would flip the sign.
+                unsafe { let _ = mt.SetMonthsOfYear((p.months_of_year & 0x0FFF) as i16); }
             }
             if !p.random_delay.is_empty() {
                 unsafe { let _ = mt.SetRandomDelay(&BSTR::from(p.random_delay.as_str())); }

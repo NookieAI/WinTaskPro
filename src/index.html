@@ -55,6 +55,10 @@
     <symbol id="i-code" viewBox="0 0 24 24"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></symbol>
     <symbol id="i-health" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+    <symbol id="i-warning" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
   </svg>
 
   <div id="root-wrap">
@@ -65,7 +69,7 @@
         <div id="app-brand">
           <img id="app-logo" src="icon.png" alt="WinTaskPro" />
           <span id="app-title">WinTaskPro</span>
-          <span class="version-pill" id="app-version">v1.16.1</span>
+          <span class="version-pill" id="app-version">v1.16.2</span>
         </div>
 
         <nav id="nav-items" aria-label="Primary navigation">
@@ -98,11 +102,11 @@
 
         <div id="folder-section">
           <div id="sidebar-header">
-            <span>📁 FOLDERS</span>
+            <span>FOLDERS</span>
             <div style="display:flex;gap:4px">
               <button class="icon-btn" onclick="openCreateFolderDialog('\\')" title="New Folder" aria-label="New folder"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></button>
               <button class="icon-btn" onclick="refreshFolders()" title="Refresh folders" aria-label="Refresh folders"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg></button>
-              <button class="icon-btn" id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle light/dark theme" aria-label="Toggle light or dark theme">☀</button>
+              <button class="icon-btn" id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle light/dark theme" aria-label="Toggle light or dark theme"><svg class="ico" aria-hidden="true"><use href="#i-sun"/></svg></button>
             </div>
           </div>
           <div id="folder-list"></div>
@@ -120,11 +124,11 @@
             <button class="btn" onclick="refreshAll()"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg> Refresh</button>
           </div>
           <div id="topbar-right">
-            <span id="live-refresh-indicator" style="display:none" title="Auto-refresh active">🔄 Live</span>
+            <span id="live-refresh-indicator" style="display:none" title="Auto-refresh active"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg> Live</span>
             <div style="position:relative;display:inline-flex;align-items:center">
               <svg class="ico search-ico" aria-hidden="true"><use href="#i-search"/></svg>
               <input type="text" id="search-input" placeholder="Search by name, trigger or action…" oninput="onSearchInput()" />
-              <button id="search-clear-btn" onclick="clearAllFilters()" title="Clear search" style="display:none;position:absolute;right:6px;background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:2px 4px;line-height:1">✕</button>
+              <button id="search-clear-btn" onclick="clearAllFilters()" title="Clear search" aria-label="Clear search" style="display:none;position:absolute;right:6px;background:none;border:none;color:var(--text3);cursor:pointer;padding:2px 4px;line-height:1"><svg class="ico" aria-hidden="true" style="width:14px;height:14px"><use href="#i-x"/></svg></button>
             </div>
             <select id="status-filter" onchange="filterTasks()">
               <option value="">All Statuses</option>
@@ -185,7 +189,7 @@
                   <tr>
                     <th data-col="cb"><input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this.checked)" /></th>
                     <th data-col="name" onclick="sortBy('name')" role="button" tabindex="0" aria-sort="none">Task Name <span class="sort-icon" aria-hidden="true">⇅</span></th>
-                    <th data-col="health" title="Health"><span class="sr-only">Health</span><span aria-hidden="true">❤</span></th>
+                    <th data-col="health" title="Health"><span class="sr-only">Health</span><svg class="ico" aria-hidden="true" style="width:13px;height:13px;vertical-align:-2px"><use href="#i-health"/></svg></th>
                     <th data-col="status" onclick="sortBy('status')" role="button" tabindex="0" aria-sort="none">Status <span class="sort-icon" aria-hidden="true">⇅</span></th>
                     <th data-col="triggers">Triggers</th>
                     <th data-col="action">Action</th>
@@ -198,7 +202,7 @@
                 <tbody id="task-tbody"></tbody>
               </table>
               <div id="empty-state" style="display:none">
-                <div style="font-size:48px">📋</div>
+                <div style="margin-bottom:6px"><svg class="ico" aria-hidden="true" style="width:44px;height:44px;color:var(--text3);opacity:.45;stroke-width:1.5"><use href="#i-tasks"/></svg></div>
                 <div style="font-size:15px;font-weight:600;margin:8px 0 4px">No tasks found</div>
                 <div style="font-size:12px;color:var(--text3)">Try adjusting your search or filter, or create a new task.</div>
               </div>
@@ -208,7 +212,7 @@
             <div id="detail-panel" class="panel-hidden">
               <div id="detail-header">
                 <span id="detail-name">—</span>
-                <button class="icon-btn" onclick="closeDetail()" aria-label="Close details" title="Close">✕</button>
+                <button class="icon-btn" onclick="closeDetail()" aria-label="Close details" title="Close"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
               </div>
               <div id="detail-actions">
                 <button class="btn btn-success" id="d-run-btn" title="Trigger an immediate run via Task Scheduler — fire-and-forget, under the task's configured account"><svg class="ico" aria-hidden="true"><use href="#i-play"/></svg> Run</button>
@@ -267,15 +271,15 @@
 
     <!-- Status bar — VS Code style -->
     <div id="status-bar">
-      <div class="statusbar-item" id="sb-folder">📁 All Tasks</div>
+      <div class="statusbar-item" id="sb-folder"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg> <span id="sb-folder-text">All Tasks</span></div>
       <span class="statusbar-sep">|</span>
       <div class="statusbar-item" id="sb-count">0 tasks</div>
       <span class="statusbar-sep">|</span>
       <div class="statusbar-item" id="sb-selected" style="display:none">— selected</div>
       <div id="statusbar-right">
-        <div class="statusbar-item clickable" onclick="showHelpModal()" title="Keyboard shortcuts (?)" role="button" tabindex="0" aria-label="Show keyboard shortcuts">⌨ ?</div>
+        <div class="statusbar-item clickable" onclick="showHelpModal()" title="Keyboard shortcuts (?)" role="button" tabindex="0" aria-label="Show keyboard shortcuts"><svg class="ico" aria-hidden="true"><use href="#i-keyboard"/></svg></div>
         <span class="statusbar-sep">|</span>
-        <div class="statusbar-item" id="sb-elevation">👤 checking…</div>
+        <div class="statusbar-item" id="sb-elevation"><svg class="ico" aria-hidden="true"><use href="#i-user"/></svg> checking…</div>
       </div>
     </div>
 
@@ -286,7 +290,7 @@
     <div id="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div id="modal-header">
         <span id="modal-title"></span>
-        <button class="icon-btn" onclick="closeModal()" aria-label="Close dialog" title="Close">✕</button>
+        <button class="icon-btn" onclick="closeModal()" aria-label="Close dialog" title="Close"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
       </div>
       <div id="modal-body"></div>
       <div id="modal-footer"></div>
@@ -297,12 +301,12 @@
   <div id="script-editor-overlay" style="display:none">
     <div id="script-editor-box" role="dialog" aria-modal="true" aria-labelledby="script-editor-title">
       <div id="script-editor-header">
-        <span id="script-editor-title">✏️ Edit Script</span>
+        <span id="script-editor-title"><svg class="ico" aria-hidden="true"><use href="#i-edit"/></svg> Edit Script</span>
         <div style="display:flex;gap:8px;align-items:center">
           <span id="script-editor-lang" class="badge badge-unknown"></span>
           <span id="script-editor-lines" style="font-size:11px;color:var(--text3)">0 lines</span>
-          <button class="btn btn-primary" onclick="saveScriptFile()">💾 Save to File</button>
-          <button class="icon-btn" onclick="closeScriptEditor()" aria-label="Close editor" title="Close">✕</button>
+          <button class="btn btn-primary" onclick="saveScriptFile()"><svg class="ico" aria-hidden="true"><use href="#i-save"/></svg> Save to File</button>
+          <button class="icon-btn" onclick="closeScriptEditor()" aria-label="Close editor" title="Close"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
         </div>
       </div>
       <textarea id="script-editor-content" spellcheck="false"
@@ -314,8 +318,8 @@
   <div id="help-modal-overlay" style="display:none">
     <div id="help-modal-box" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
       <div id="help-modal-header">
-        <span>⌨️ Keyboard Shortcuts</span>
-        <button class="icon-btn" onclick="closeHelpModal()" aria-label="Close" title="Close">✕</button>
+        <span><svg class="ico" aria-hidden="true"><use href="#i-keyboard"/></svg> Keyboard Shortcuts</span>
+        <button class="icon-btn" onclick="closeHelpModal()" aria-label="Close" title="Close"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
       </div>
       <div id="help-modal-body"></div>
     </div>

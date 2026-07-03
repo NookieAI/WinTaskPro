@@ -4,6 +4,90 @@ All notable changes to WinTaskPro are documented in this file.
 Format follows [Conventional Commits](https://www.conventionalcommits.org/) style.
 
 ---
+## [1.16.2] — 2026-07-03 — Round-3 audit: correctness fixes, security hardening & the icon-system finish
+
+A third multi-agent deep-dive audit (three parallel reviewers — JS frontend, Rust
+backend, and product/visual design). Confirmed findings were fixed and the app's
+half-finished emoji→SVG icon migration was completed so the whole UI now speaks one
+monochrome icon language. Verified with `cargo check` (clean), `node --check` (clean),
+and live DOM/computed-style inspection of the rendered frontend. Version bumped
+1.16.1 → 1.16.2 across `package.json` / `Cargo.toml` / `Cargo.lock` / `tauri.conf.json`
+/ `index.html` / `app.manifest`.
+
+### Fixed — frontend (JS)
+- **`confirmAction()` silently no-op'd three actions (HIGH).** It was declared
+  `(message, onConfirm)` but every call site passes four args
+  `(title, message, confirmLabel, onConfirm)`, so `onConfirm` bound to the message
+  *string* and clicking **Confirm** threw `onConfirm is not a function`. **Re-trust
+  changed integrity**, **Delete saved template**, and **Reset highlight rules** all
+  appeared to work but never ran. Signature corrected; the confirm label and title are
+  now honoured too.
+- **`copyAsPowerShell` script injection (MEDIUM, security).** Task name / program path /
+  arguments / run-as user were interpolated straight into double-quoted PowerShell
+  strings, so a task whose name or args contained `"` or `$(…)` broke out and injected
+  code into the generated `.ps1` — directly in this app's tamper threat model. All
+  OS-derived values now go through single-quoted PS literals (`'` → `''`). Also fixed the
+  line-continuations from `\` (not valid in PowerShell) to backtick.
+- **Dashboard crash on a task with no `last_run` (MEDIUM).** The *Recently Failed* sort
+  called `.localeCompare` on a possibly-undefined `last_run`; a task that failed to start
+  threw and aborted the whole dashboard render into its error arm. Now null-guarded (both
+  the failed and upcoming sorts).
+- **Backup bundle corruption from crafted task data (MEDIUM).** A task whose Description /
+  Arguments contained a line starting `### TASK ` would false-split the `.wtpbak` bundle
+  mid-XML on restore, corrupting that task and shifting all following ones. The parser now
+  validates each block's shape and folds a false split back onto the previous task's XML —
+  backward-compatible with existing backups.
+- **Process history bled across recycled PIDs (MEDIUM).** CPU/memory/IO/handle sparkline
+  history was keyed on raw PID; Windows recycles PIDs, so a dead process's trend could show
+  on an unrelated new one. History is now purged when a PID's `start_time` changes.
+- **Dead code removed.** An empty auto-expand `if` with a nonsensical condition in
+  `buildProcTree`.
+
+### Fixed — backend (Rust)
+- **Tray-icon setup could panic the whole app (MEDIUM).** `.expect("App icon not found")`
+  aborted the process during setup if the embedded icon was missing/unreadable (corrupted
+  build, resource stripping, some AV-modified binaries). Now degrades gracefully — the tray
+  builds with its default icon rather than killing the app with no window.
+- **Unbounded `max_records` in two event-log queries (LOW).** A hostile/buggy IPC value
+  overflowed PowerShell's `[int]` via `($max * 2)`; both paths now clamp to 1–1000, matching
+  the existing `get_task_history` guard.
+- **Trigger bitmask sign-flip (LOW).** `days_of_week` / `days_of_month` / `months_of_year`
+  were narrow-cast (`as i16`/`i32`) without masking, so an out-of-range bit could sign-flip
+  into a bogus day/month set. Masked to the valid bit-width before the cast.
+- **Dead work in the process hot path (LOW).** `process.tasks()` (always `None` on Windows)
+  was computed for every process each refresh, then overwritten from the toolhelp snapshot.
+  Dropped.
+
+### Studio-quality visual polish — the icon system, finished
+- **Emoji chrome → the existing SVG sprite.** Prior rounds built a clean monochrome stroke-
+  icon sprite but left emoji scattered through the always-visible chrome. Migrated: the
+  sidebar `FOLDERS` header, theme toggle (`☀`/`🌙` → sun/moon SVG that swaps on toggle), the
+  Live indicator, the **health** table-header, the empty-state illustration, every close (`✕`)
+  button, the search-clear button, the status-bar folder / elevation / keyboard-shortcut
+  items, folder-list rows, the script-editor and keyboard-shortcut modal headers.
+- **Dashboard hero cards.** The five stat cards' emoji (`📋 ▶ ✅ ⏸ ❌`) are now monochrome SVG
+  icons **tinted to match each card's value colour** (Running green, Ready accent, Failed
+  red), so icon and number read as one accent.
+- **Every task-row control** (Run / Stop / Delete) and **all three context menus** (task,
+  folder, process) now use consistent SVG icons; context-menu items gained a flex icon
+  column for alignment.
+- **Centralised modal-title icons.** A single `modalTitleHtml()` helper maps a leading
+  decorative emoji in any dialog title to a sprite icon and escapes the rest — upgrading
+  ~15 modal headers at once without touching each call site, and hardening title rendering.
+- **Native tray menu** de-emoji'd (`🪟`/`❌` → plain "Open WinTaskPro" / "Quit"), the clean
+  choice for a Windows tray.
+- Four new sprite symbols: `i-check`, `i-user`, `i-warning`, `i-keyboard`.
+
+### Typography & micro-polish (CSS)
+- Tabular numerals on the task table, dashboard tables, stat-pill counts, nav badge and
+  version pill so timestamps/counts don't jitter during auto-refresh.
+- Stat-card labels and dashboard card titles brightened `--text3` → `--text2` (readability,
+  consistent with the prior nav/folder brightening); big stat numerals eased `-2px` → `-1.5px`
+  letter-spacing so adjacent digits don't kiss.
+- Version pill `10px` → `11px`; dropped the heavy glow on the tiny nav count badge; scoped
+  the stat-pill `transition: all` to just the properties that change.
+
+---
 ## [1.16.1] — 2026-06-21 — Round-2 audit: updater fix, UI responsiveness, accessibility & visual polish
 
 A second multi-agent deep-dive audit (73 raw findings → 24 confirmed after

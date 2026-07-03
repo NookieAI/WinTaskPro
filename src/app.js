@@ -206,6 +206,34 @@ function setBackgroundInert(open) {
   else root.removeAttribute('aria-hidden');
 }
 
+// Maps a leading decorative emoji in a modal/dialog title to a crisp SVG sprite
+// icon, so headers speak the app's monochrome icon language instead of rendering
+// an OS-coloured, OS-sized emoji glyph. Centralising this here upgrades every
+// openModal() call site at once without editing each one.
+const MODAL_TITLE_ICONS = {
+  '⚠️':'i-warning','⚠':'i-warning','➕':'i-plus','✏️':'i-edit','📝':'i-note',
+  '📋':'i-copy','🗑️':'i-trash','🗑':'i-trash','🧪':'i-flask','📥':'i-download',
+  '📤':'i-export','⚡':'i-zap','🛡️':'i-shield','🛡':'i-shield','🔁':'i-refresh',
+  '🔄':'i-refresh','🛠️':'i-settings','🛠':'i-settings','⚙️':'i-settings','💾':'i-save',
+  '🔍':'i-search','📅':'i-clock','🕐':'i-clock','🌙':'i-moon','📁':'i-folder',
+  '📂':'i-folder','⭐':'i-star','🔒':'i-shield','▶':'i-play','✅':'i-check','ℹ️':'i-command',
+  '</>':'i-code',
+};
+// Renders a title string as safe HTML: a leading mapped emoji becomes an inline
+// SVG icon and the remainder is escaped; unmapped/absent → fully escaped text
+// (so nothing regresses and no user data is ever injected).
+function modalTitleHtml(title) {
+  const s = String(title == null ? '' : title);
+  const sp = s.indexOf(' ');
+  const head = sp === -1 ? s : s.slice(0, sp);
+  const sym = MODAL_TITLE_ICONS[head];
+  if (sym) {
+    const rest = sp === -1 ? '' : s.slice(sp + 1);
+    return `<svg class="ico" aria-hidden="true" style="width:16px;height:16px;vertical-align:-2px;margin-right:3px"><use href="#${sym}"/></svg>${escHtml(rest)}`;
+  }
+  return escHtml(s);
+}
+
 function openModal(title, bodyHtml, footerHtml = '') {
   // Cancel any pending post-close clear. Without this, the following race
   // occurs: user closes modal A (starts 200ms timer) → cloneTask awaits
@@ -218,7 +246,7 @@ function openModal(title, bodyHtml, footerHtml = '') {
   // vis-14: if a previous modal is mid-exit, cancel its closing state so the new
   // one opens cleanly instead of getting stuck at the faded-out keyframe.
   document.getElementById('modal-overlay').classList.remove('closing');
-  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-title').innerHTML = modalTitleHtml(title);
   document.getElementById('modal-body').innerHTML    = bodyHtml;
   document.getElementById('modal-footer').innerHTML  = footerHtml;
   document.getElementById('modal-overlay').classList.add('show');
@@ -398,7 +426,7 @@ async function refreshFolders() {
     const allEl = document.createElement('div');
     allEl.className   = 'folder-item' + (selectedFolder === null ? ' active' : '');
     allEl.id          = 'folder-item-all';
-    allEl.innerHTML   = '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📂 All Tasks</span><span class="folder-count-badge" id="fi-count-all"></span>';
+    allEl.innerHTML   = '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><svg class="ico" aria-hidden="true" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px"><use href="#i-folder"/></svg>All Tasks</span><span class="folder-count-badge" id="fi-count-all"></span>';
     allEl.onclick = () => {
       selectedFolder = null;
       document.querySelectorAll('.folder-item').forEach(f => f.classList.remove('active'));
@@ -411,7 +439,7 @@ async function refreshFolders() {
       const el = document.createElement('div');
       el.className = 'folder-item' + (selectedFolder === folder ? ' active' : '');
       const safeId = 'fi-count-' + folder.replace(/[^a-zA-Z0-9]/g, '_');
-      el.innerHTML = `<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📁 ${escHtml(folder)}</span><span class="folder-count-badge" id="${safeId}"></span>`;
+      el.innerHTML = `<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><svg class="ico" aria-hidden="true" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px"><use href="#i-folder"/></svg>${escHtml(folder)}</span><span class="folder-count-badge" id="${safeId}"></span>`;
       el.onclick = () => {
         selectedFolder = folder;
         document.querySelectorAll('.folder-item').forEach(f => f.classList.remove('active'));
@@ -454,7 +482,7 @@ async function refreshFolders() {
         const ctxMenu = document.getElementById('ctx-menu');
         ctxMenu.setAttribute('role', 'menu');               // a11y-9
         ctxMenu.setAttribute('aria-label', 'Folder options');
-        ctxMenu.innerHTML = `<div class="ctx-item danger" role="menuitem" tabindex="-1" id="folder-ctx-delete">🗑 Delete Folder…</div>`;
+        ctxMenu.innerHTML = `<div class="ctx-item danger" role="menuitem" tabindex="-1" id="folder-ctx-delete"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>Delete Folder…</div>`;
         ctxMenu.style.display = 'block';
         ctxMenu.style.left = e.pageX + 'px';
         ctxMenu.style.top  = e.pageY + 'px';
@@ -613,7 +641,10 @@ function updateStatusBar() {
   const folderName = selectedFolder === null ? 'All Tasks'
     : selectedFolder === '\\' ? '\\ (root)'
     : selectedFolder;
-  if (folderEl) folderEl.textContent = '📁 ' + folderName;
+  // Update only the text span so the leading folder SVG icon in #sb-folder stays.
+  const folderTextEl = document.getElementById('sb-folder-text');
+  if (folderTextEl) folderTextEl.textContent = folderName;
+  else if (folderEl) folderEl.textContent = folderName;
 
   const total    = allTasks.length;
   const filtered = filteredTasks.length;
@@ -910,9 +941,9 @@ function renderTable() {
       <td data-col="next_run">${escHtml(task.next_run || '—')}</td>
       <td data-col="last_result" class="${resultClass(task.last_result)}">${escHtml(task.last_result || '—')}</td>
       <td data-col="controls" class="controls-cell">
-        <button class="icon-btn" title="Run"    aria-label="Run task"    data-action="run"    data-path="${epath}">▶</button>
-        <button class="icon-btn" title="Stop"   aria-label="Stop task"   data-action="stop"   data-path="${epath}">⏹</button>
-        <button class="icon-btn danger" title="Delete" aria-label="Delete task" data-action="delete" data-path="${epath}">🗑</button>
+        <button class="icon-btn" title="Run"    aria-label="Run task"    data-action="run"    data-path="${epath}"><svg class="ico" aria-hidden="true"><use href="#i-play"/></svg></button>
+        <button class="icon-btn" title="Stop"   aria-label="Stop task"   data-action="stop"   data-path="${epath}"><svg class="ico" aria-hidden="true"><use href="#i-stop"/></svg></button>
+        <button class="icon-btn danger" title="Delete" aria-label="Delete task" data-action="delete" data-path="${epath}"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg></button>
       </td>
     </tr>`;
   }).join('');
@@ -1507,13 +1538,19 @@ async function deleteTask(path, name) {
 }
 
 // ── Confirm action modal ──────────────────────────────────────────────────────
-function confirmAction(message, onConfirm) {
-  openModal('⚠ Confirm', `<p style="padding:16px;color:var(--text)">${escHtml(message)}</p>`,
+// Signature is (title, message, confirmLabel, onConfirm). BUG FIX: this was
+// declared `(message, onConfirm)` while all three call sites (re-trust changed
+// integrity, delete template, reset highlight rules) invoke it with four args.
+// `onConfirm` bound to the message STRING, so clicking Confirm threw
+// "onConfirm is not a function" and the action silently never ran.
+function confirmAction(title, message, confirmLabel, onConfirm) {
+  openModal(title || 'Confirm',
+    `<p style="padding:14px 4px;color:var(--text);line-height:1.6">${escHtml(message)}</p>`,
     `<button class="btn" onclick="closeModal()">Cancel</button>
-     <button class="btn btn-danger" id="confirm-ok-btn">Confirm</button>`);
+     <button class="btn btn-danger" id="confirm-ok-btn">${escHtml(confirmLabel || 'Confirm')}</button>`);
   setTimeout(() => {
     const btn = document.getElementById('confirm-ok-btn');
-    if (btn) btn.onclick = () => { closeModal(); onConfirm(); };
+    if (btn) btn.onclick = () => { closeModal(); if (typeof onConfirm === 'function') onConfirm(); };
   }, 0);
 }
 
@@ -2461,7 +2498,7 @@ async function openXmlEditor(task) {
   const footer = `
     <button class="btn btn-primary" id="xe-save-btn">💾 Save Changes</button>
     <button class="btn" onclick="closeModal()">Cancel</button>`;
-  openModal('&#xFF1C;/&#xFF1E; Edit Task XML', body, footer);
+  openModal('</> Edit Task XML', body, footer);
 
   requestAnimationFrame(() => {
     const saveBtn = document.getElementById('xe-save-btn');
@@ -3249,21 +3286,21 @@ function showCtxMenu(event, task) {
   menu.setAttribute('role', 'menu');
   menu.setAttribute('aria-label', 'Task options');
   menu.innerHTML = `
-    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="edit">✏️ Edit</div>
-    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="clone">📋 Clone</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="edit"><svg class="ico" aria-hidden="true"><use href="#i-edit"/></svg>Edit</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="clone"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg>Clone</div>
     <div class="ctx-sep" role="separator"></div>
-    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="run">▶ Run</div>
-    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="stop">⏹ Stop</div>
-    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="toggle">${task.enabled ? '⏸ Disable' : '▶ Enable'}</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="run"><svg class="ico" aria-hidden="true"><use href="#i-play"/></svg>Run</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="stop"><svg class="ico" aria-hidden="true"><use href="#i-stop"/></svg>Stop</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="toggle"><svg class="ico" aria-hidden="true"><use href="#${task.enabled ? 'i-pause' : 'i-play'}"/></svg>${task.enabled ? 'Disable' : 'Enable'}</div>
     <div class="ctx-sep" role="separator"></div>
-    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="note">📝 ${getNoteForTask(task.path) ? 'Edit Note' : 'Add Note'}</div>
-    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="ps">⚡ Copy as PowerShell</div>
-    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="copy-path">📋 Copy Path</div>
-    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="copy-name">📋 Copy Name</div>
-    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="xml">＜/＞ Export XML</div>
-    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="edit-xml">＜/＞ Edit XML</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="note"><svg class="ico" aria-hidden="true"><use href="#i-note"/></svg>${getNoteForTask(task.path) ? 'Edit Note' : 'Add Note'}</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="ps"><svg class="ico" aria-hidden="true"><use href="#i-zap"/></svg>Copy as PowerShell</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="copy-path"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg>Copy Path</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="copy-name"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg>Copy Name</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="xml"><svg class="ico" aria-hidden="true"><use href="#i-export"/></svg>Export XML</div>
+    <div class="ctx-item" role="menuitem" tabindex="-1" data-ctx-action="edit-xml"><svg class="ico" aria-hidden="true"><use href="#i-code"/></svg>Edit XML</div>
     <div class="ctx-sep" role="separator"></div>
-    <div class="ctx-item danger" role="menuitem" tabindex="-1" data-ctx-action="delete">🗑 Delete</div>`;
+    <div class="ctx-item danger" role="menuitem" tabindex="-1" data-ctx-action="delete"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>Delete</div>`;
 
   // Wire up each item via event delegation on ctxTask (safe — no string embedding)
   menu.onclick = e => {
@@ -4022,7 +4059,7 @@ function reTrustChangedIntegrity() {
 // user has the full power of "edit every task at once" and is expected
 // to use it carefully. The audit log records every change.
 function openBulkFindReplace() {
-    openModal('🔁 Bulk Find &amp; Replace',
+    openModal('🔁 Bulk Find & Replace',
         `<div style="display:flex;flex-direction:column;gap:14px">
            <div style="font-size:13px;color:var(--text2);line-height:1.5">
              Replace text across many tasks at once — useful after moving scripts
@@ -4401,7 +4438,7 @@ function renderTemplates() {
   const userTemplates = loadUserTemplates();
 
   content.innerHTML = `
-    <h2 class="section-heading">📚 Script Library</h2>
+    <h2 class="section-heading"><svg class="ico" aria-hidden="true" style="width:18px;height:18px;vertical-align:-3px;margin-right:7px"><use href="#i-library"/></svg>Script Library</h2>
     <p class="section-sub">Pre-built task templates — click <em>Use Template</em> to create a task with these settings pre-filled. Save your own templates from any task's detail panel via "💾 Save as Template".</p>
     ${userTemplates.length > 0 ? `
       <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);font-weight:700;margin:18px 0 8px">⭐ Your Templates (${userTemplates.length})</div>
@@ -4465,7 +4502,7 @@ function renderSettings() {
 
   content.innerHTML = `
     <div class="settings-page">
-      <h2 class="section-heading">⚙ Settings</h2>
+      <h2 class="section-heading"><svg class="ico" aria-hidden="true" style="width:18px;height:18px;vertical-align:-3px;margin-right:7px"><use href="#i-settings"/></svg>Settings</h2>
 
       <div class="settings-section">
         <div class="settings-section-title">General</div>
@@ -5114,10 +5151,12 @@ async function init() {
     const devMode  = await invoke('is_dev');
     const sbEl = document.getElementById('sb-elevation');
     if (elevated) {
-      if (sbEl) sbEl.textContent = '🔒 Administrator';
+      // Shield icon (admin) — set as innerHTML so the SVG renders; the strings
+      // here are static literals, so there is no user-data escaping concern.
+      if (sbEl) sbEl.innerHTML = '<svg class="ico" aria-hidden="true"><use href="#i-shield"/></svg> Administrator';
     } else {
       if (sbEl) {
-        sbEl.textContent = '⚠ Not Admin';
+        sbEl.innerHTML = '<svg class="ico" aria-hidden="true"><use href="#i-warning"/></svg> Not Admin';
         sbEl.style.color = 'var(--red)';
         sbEl.title = 'Click to restart as Administrator';
         sbEl.classList.add('clickable');
@@ -5134,10 +5173,10 @@ async function init() {
         ? ' <span style="opacity:.7;font-size:10px">(Devserver will also restart elevated)</span>'
         : '';
       banner.innerHTML = `
-        <span>⚠ <strong>Not running as Administrator</strong> — Task Scheduler operations will fail.${devNote}</span>
+        <span><svg class="ico" aria-hidden="true" style="vertical-align:-2px"><use href="#i-warning"/></svg> <strong>Not running as Administrator</strong> — Task Scheduler operations will fail.${devNote}</span>
         <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
-          <button class="btn btn-danger btn-sm" id="elevation-restart-btn">↑ Restart as Admin</button>
-          <button class="icon-btn" id="elevation-dismiss-btn" style="color:var(--red)">✕</button>
+          <button class="btn btn-danger btn-sm" id="elevation-restart-btn"><svg class="ico" aria-hidden="true"><use href="#i-shield"/></svg> Restart as Admin</button>
+          <button class="icon-btn" id="elevation-dismiss-btn" style="color:var(--red)" aria-label="Dismiss"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
         </div>`;
       // BUG FIX (video audit 2026-04-20): was `position:fixed; top:0` which
       // clipped BEHIND the Windows title bar AND behind the v2.1.0 version pill
@@ -7392,20 +7431,23 @@ async function loadDashboard() {
     const bad      = tasks.filter(t => healthScore(t) === 'bad').length;
     const upcoming = [...tasks]
       .filter(t => t.next_run && t.next_run !== 'Never' && t.next_run !== 'N/A')
-      .sort((a, b) => a.next_run.localeCompare(b.next_run)).slice(0, 10);
+      .sort((a, b) => (a.next_run || '').localeCompare(b.next_run || '')).slice(0, 10);
     const recentlyFailed = tasks
       .filter(t => t.last_result_code !== 0 && t.last_result_code !== TASK_RESULT_NOT_RUN && t.last_result_code !== TASK_RESULT_RUNNING)
-      .sort((a, b) => b.last_run.localeCompare(a.last_run)).slice(0, 5);
+      // Null-guard: a task that failed to start may have no last_run string, and
+      // an unguarded .localeCompare on undefined throws — which aborted the whole
+      // loadDashboard() into its catch arm and broke the dashboard.
+      .sort((a, b) => (b.last_run || '').localeCompare(a.last_run || '')).slice(0, 5);
     const healthPct = total > 0 ? Math.round((ready / total) * 100) : 0;
     const fmtDate = s => (s && s !== 'Never' && s !== 'N/A') ? s.replace(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}):\d{2}.*/, '$1') : (s || '');
 
     content.innerHTML = `
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-icon">📋</div><div class="stat-val">${total}</div><div class="stat-lbl">Total</div></div>
-        <div class="stat-card running"><div class="stat-icon">▶</div><div class="stat-val">${running}</div><div class="stat-lbl">Running</div></div>
-        <div class="stat-card ready"><div class="stat-icon">✅</div><div class="stat-val">${ready}</div><div class="stat-lbl">Ready</div></div>
-        <div class="stat-card disabled"><div class="stat-icon">⏸</div><div class="stat-val">${disabled}</div><div class="stat-lbl">Disabled</div></div>
-        <div class="stat-card failed-card" onclick="goToFailedTasks()" style="cursor:pointer"><div class="stat-icon">❌</div><div class="stat-val">${failed}</div><div class="stat-lbl">Failed</div></div>
+        <div class="stat-card"><div class="stat-icon"><svg class="ico" aria-hidden="true"><use href="#i-tasks"/></svg></div><div class="stat-val">${total}</div><div class="stat-lbl">Total</div></div>
+        <div class="stat-card running"><div class="stat-icon"><svg class="ico" aria-hidden="true"><use href="#i-live"/></svg></div><div class="stat-val">${running}</div><div class="stat-lbl">Running</div></div>
+        <div class="stat-card ready"><div class="stat-icon"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg></div><div class="stat-val">${ready}</div><div class="stat-lbl">Ready</div></div>
+        <div class="stat-card disabled"><div class="stat-icon"><svg class="ico" aria-hidden="true"><use href="#i-pause"/></svg></div><div class="stat-val">${disabled}</div><div class="stat-lbl">Disabled</div></div>
+        <div class="stat-card failed-card" onclick="goToFailedTasks()" style="cursor:pointer"><div class="stat-icon"><svg class="ico" aria-hidden="true"><use href="#i-warning"/></svg></div><div class="stat-val">${failed}</div><div class="stat-lbl">Failed</div></div>
       </div>
       <div style="margin:10px 0 4px;font-size:11px;color:var(--text3)">System Health: ${healthPct}% Ready</div>
       <div class="health-bar-wrap"><div class="health-bar" style="width:${healthPct}%"></div></div>
@@ -7454,7 +7496,7 @@ async function loadDashboard() {
         if (broken.length === 0) return '';  // hide the card entirely if nothing to show
         return `
         <div class="dash-card" style="margin-top:16px;border-color:rgba(245,158,11,.34)">
-          <div class="dash-card-title" style="color:var(--yellow)">⚠ Tasks That Won't Fire (${broken.length})</div>
+          <div class="dash-card-title" style="color:var(--yellow)"><svg class="ico" aria-hidden="true" style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"><use href="#i-warning"/></svg>Tasks That Won't Fire (${broken.length})</div>
           <div style="font-size:12px;color:var(--text3);margin-bottom:10px">These tasks are enabled and have no failures recorded, but their trigger settings mean they can never run as configured.</div>
           <table class="dash-table">
             <thead><tr><th style="width:34%">Name</th><th style="width:32%">Reason</th><th style="width:34%">Advice</th></tr></thead>
@@ -7474,7 +7516,7 @@ async function loadDashboard() {
       ${renderConflictsCard(tasks)}
       ${fpRenderDriftCard(tasks)}
       <div class="dash-card fp-digest-card" style="margin-top:16px">
-        <div class="dash-card-title">🌙 While You Were Away <span style="font-weight:400;font-size:11px;color:var(--text3);text-transform:none;letter-spacing:0">— last 24 hours</span></div>
+        <div class="dash-card-title"><svg class="ico" aria-hidden="true" style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"><use href="#i-moon"/></svg>While You Were Away <span style="font-weight:400;font-size:11px;color:var(--text3);text-transform:none;letter-spacing:0">— last 24 hours</span></div>
         <div id="fp-dash-digest"></div>
       </div>`;
     // Populate the digest without blocking paint, and defer it briefly so its
@@ -7588,7 +7630,7 @@ function renderTimelineCard(tasks) {
     if (taskFirings.length === 0) {
         return `
             <div class="dash-card" style="margin-top:16px">
-              <div class="dash-card-title">📅 Next 24 Hours</div>
+              <div class="dash-card-title"><svg class="ico" aria-hidden="true" style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"><use href="#i-clock"/></svg>Next 24 Hours</div>
               <div style="padding:18px;text-align:center;color:var(--text2);font-size:13px">
                 No deterministic firings scheduled in the next 24 hours.
                 <div style="font-size:11px;color:var(--text3);margin-top:6px">Event-driven triggers (boot, logon, idle) aren't shown here — only time-based triggers.</div>
@@ -7648,7 +7690,7 @@ function renderTimelineCard(tasks) {
 
     return `
         <div class="dash-card" style="margin-top:16px">
-          <div class="dash-card-title">📅 Next 24 Hours <span style="font-weight:400;font-size:11px;color:var(--text3);text-transform:none;letter-spacing:0;margin-left:8px">— ${taskFirings.length} task${taskFirings.length === 1 ? '' : 's'} with scheduled firings</span></div>
+          <div class="dash-card-title"><svg class="ico" aria-hidden="true" style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"><use href="#i-clock"/></svg>Next 24 Hours <span style="font-weight:400;font-size:11px;color:var(--text3);text-transform:none;letter-spacing:0;margin-left:8px">— ${taskFirings.length} task${taskFirings.length === 1 ? '' : 's'} with scheduled firings</span></div>
           <svg viewBox="0 0 ${WIDTH} ${HEIGHT}" style="width:100%;max-width:${WIDTH}px;height:auto;display:block;margin:8px auto" xmlns="http://www.w3.org/2000/svg">
             ${ticks.map(t => `
               <line x1="${t.x}" y1="22" x2="${t.x}" y2="${HEIGHT - 12}" stroke="${t.h === 0 ? 'var(--accent)' : 'var(--border)'}" stroke-width="${t.h === 0 ? '1' : '0.5'}"/>
@@ -7726,7 +7768,7 @@ function renderConflictsCard(tasks) {
 
     return `
         <div class="dash-card" style="margin-top:16px;border-color:rgba(245,158,11,.34)">
-          <div class="dash-card-title" style="color:var(--yellow)">⚡ Schedule Conflicts (${unique.length})</div>
+          <div class="dash-card-title" style="color:var(--yellow)"><svg class="ico" aria-hidden="true" style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"><use href="#i-zap"/></svg>Schedule Conflicts (${unique.length})</div>
           <div style="font-size:12px;color:var(--text3);margin-bottom:10px">Pairs of tasks scheduled to fire within ${CONFLICT_WINDOW_SEC} seconds of each other in the next ${CONFLICT_PROJECTION_DAYS} days. Concurrent execution can cause CPU/disk/memory contention.</div>
           <table class="dash-table">
             <thead><tr><th style="width:30%">Task A</th><th style="width:30%">Task B</th><th style="width:25%">Collision</th><th style="width:15%">Gap</th></tr></thead>
@@ -7807,8 +7849,12 @@ function applyTheme(light) {
     root.style.removeProperty('--red-bg');
     root.style.removeProperty('--yellow');
   }
+  // Swap the SVG symbol (moon when in light mode → click for dark; sun when in
+  // dark mode → click for light) rather than replacing the button's textContent,
+  // which would wipe the inline <svg> and drop back to an OS-rendered emoji.
   const btn = document.getElementById('theme-toggle-btn');
-  if (btn) btn.textContent = light ? '🌙' : '☀';
+  const use = btn && btn.querySelector('use');
+  if (use) use.setAttribute('href', light ? '#i-moon' : '#i-sun');
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -8249,14 +8295,25 @@ async function loadScheduledRunTimes(taskPath, container) {
 // FEATURE: Copy as PowerShell
 // ════════════════════════════════════════════════════════════════════════════════
 function copyAsPowerShell(task) {
+  // Escape an arbitrary value as a single-quoted PowerShell string literal.
+  // Single-quoted PS strings don't expand $vars, subexpressions or backticks;
+  // the only escape needed is doubling an embedded single quote. SECURITY:
+  // the previous version interpolated task.name / program_path / program_args /
+  // run_as_user straight into double-quoted PS strings, so a task whose name or
+  // arguments contained `"` or `$(...)` broke out and injected code into the
+  // generated .ps1 — squarely in this app's threat model (it manages tampered
+  // tasks). All OS-derived values now go through psq().
+  const psq = v => "'" + String(v == null ? '' : v).replace(/'/g, "''") + "'";
+
+  const atTime = task.trigger_start ? task.trigger_start.slice(11, 16) : '08:00';
   const trigger = (() => {
     switch ((task.trigger_type || '').toLowerCase()) {
-      case 'daily':   return `New-ScheduledTaskTrigger -Daily -At "${task.trigger_start ? task.trigger_start.slice(11,16) : '08:00'}"`;
-      case 'weekly':  return `New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At "${task.trigger_start ? task.trigger_start.slice(11,16) : '08:00'}"`;
-      case 'once':    return `New-ScheduledTaskTrigger -Once -At "${task.trigger_start || '2026-01-01T08:00:00'}"`;
+      case 'daily':   return `New-ScheduledTaskTrigger -Daily -At ${psq(atTime || '08:00')}`;
+      case 'weekly':  return `New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At ${psq(atTime || '08:00')}`;
+      case 'once':    return `New-ScheduledTaskTrigger -Once -At ${psq(task.trigger_start || '2026-01-01T08:00:00')}`;
       case 'boot':    return `New-ScheduledTaskTrigger -AtStartup`;
       case 'logon':   return `New-ScheduledTaskTrigger -AtLogOn`;
-      default:        return `New-ScheduledTaskTrigger -Daily -At "08:00"`;
+      default:        return `New-ScheduledTaskTrigger -Daily -At '08:00'`;
     }
   })();
 
@@ -8264,24 +8321,28 @@ function copyAsPowerShell(task) {
   const isSystem = runAs.toUpperCase() === 'SYSTEM' || runAs.toUpperCase().startsWith('NT AUTHORITY');
   const principalArgs = isSystem
     ? `-RunLevel Highest`
-    : `-UserId "${runAs}" -RunLevel ${task.run_level === 1 ? 'Highest' : 'Limited'}`;
+    : `-UserId ${psq(runAs)} -RunLevel ${task.run_level === 1 ? 'Highest' : 'Limited'}`;
 
+  const exe = task.program_path || 'C:\\Windows\\System32\\cmd.exe';
+  // Note: backtick (\`) is PowerShell's line-continuation — the old script used
+  // a backslash, which PowerShell does not honour, so the generated snippet was
+  // also syntactically broken. Fixed alongside the injection hardening.
   const ps = `# Generated by WinTaskPro — ${new Date().toISOString().slice(0,10)}
 # Task: ${task.path}
 
-$action  = New-ScheduledTaskAction -Execute "${task.program_path || 'C:\\Windows\\System32\\cmd.exe'}"${task.program_args ? ` -Argument "${task.program_args}"` : ''}${task.working_dir ? ` -WorkingDirectory "${task.working_dir}"` : ''}
+$action  = New-ScheduledTaskAction -Execute ${psq(exe)}${task.program_args ? ` -Argument ${psq(task.program_args)}` : ''}${task.working_dir ? ` -WorkingDirectory ${psq(task.working_dir)}` : ''}
 $trigger = ${trigger}
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1) -RestartCount 3
 $principal = New-ScheduledTaskPrincipal ${principalArgs}
 
-Register-ScheduledTask \\
-  -TaskName "${task.name}" \\
-  -TaskPath "${task.folder || '\\'}" \\
-  -Action $action \\
-  -Trigger $trigger \\
-  -Settings $settings \\
-  -Principal $principal \\
-  -Description "${(task.description || '').replace(/"/g, "'")}" \\
+Register-ScheduledTask \`
+  -TaskName ${psq(task.name)} \`
+  -TaskPath ${psq(task.folder || '\\')} \`
+  -Action $action \`
+  -Trigger $trigger \`
+  -Settings $settings \`
+  -Principal $principal \`
+  -Description ${psq(task.description || '')} \`
   -Force`;
 
   navigator.clipboard.writeText(ps).then(() => {
@@ -8290,7 +8351,7 @@ Register-ScheduledTask \\
     // Fallback: show in a modal
     openModal('PowerShell Script',
       `<div class="xml-box" style="max-height:360px">${escHtml(ps)}</div>`,
-      `<button class="btn btn-primary" onclick="navigator.clipboard.writeText(${JSON.stringify(ps)}).then(()=>showToast('Copied','success'))">📋 Copy</button>
+      `<button class="btn btn-primary" onclick="navigator.clipboard.writeText(${JSON.stringify(ps)}).then(()=>showToast('Copied','success'))"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg> Copy</button>
        <button class="btn" onclick="closeModal()">Close</button>`);
   });
 }
@@ -8434,6 +8495,7 @@ let _procCpuHistory      = new Map();   // pid → [60 samples]
 let _procMemHistory      = new Map();   // pid → [60 samples] (working_set MB)
 let _procIoHistory       = new Map();   // pid → [60 samples] (KB/s combined R+W)
 let _procHandlesHistory  = new Map();   // pid → [60 samples]
+let _procStartTimes      = new Map();   // pid → start_time, to detect PID reuse
 const PROC_CPU_HISTORY_SIZE = 60;
 let _procSnapshot        = null;        // snapshot mode {timestamp, byPid: Map}
 let _procShellMounted    = false;
@@ -8790,6 +8852,17 @@ async function refreshProcessData() {
         // Update history for each live PID. Four series so the Performance
         // tab can show CPU, memory, I/O, and handles trends.
         for (const p of procs) {
+            // PID-recycle guard: Windows reuses PIDs aggressively. If this PID
+            // now belongs to a different process (its start_time changed), drop
+            // the previous process's trend history so its CPU/mem/IO/handle
+            // sparklines don't bleed onto the unrelated new process.
+            const prevStart = _procStartTimes.get(p.pid);
+            if (prevStart !== undefined && prevStart !== p.start_time) {
+                _procCpuHistory.delete(p.pid);     _procMemHistory.delete(p.pid);
+                _procIoHistory.delete(p.pid);      _procHandlesHistory.delete(p.pid);
+            }
+            _procStartTimes.set(p.pid, p.start_time);
+
             const cpuH = _procCpuHistory.get(p.pid) || new Array(PROC_CPU_HISTORY_SIZE).fill(0);
             cpuH.shift(); cpuH.push(p.cpu_usage);
             _procCpuHistory.set(p.pid, cpuH);
@@ -8808,7 +8881,7 @@ async function refreshProcessData() {
         }
         // GC dead-process histories so the map doesn't grow unbounded
         const livePids = new Set(procs.map(p => p.pid));
-        for (const m of [_procCpuHistory, _procMemHistory, _procIoHistory, _procHandlesHistory]) {
+        for (const m of [_procCpuHistory, _procMemHistory, _procIoHistory, _procHandlesHistory, _procStartTimes]) {
             for (const pid of [...m.keys()]) {
                 if (!livePids.has(pid)) m.delete(pid);
             }
@@ -9073,9 +9146,6 @@ function buildProcTree(filteredProcs) {
     function walk(p, depth) {
         const kids = childrenOf.get(p.pid) || [];
         result.push({ proc: p, depth, hasChildren: kids.length > 0 });
-        if (_procExpanded.has(p.pid) || depth === 0 && kids.length > 0 && depth < 1) {
-            // Default-expand top level; user can collapse explicitly
-        }
         if (_procExpanded.has(p.pid)) {
             kids.sort((a, b) => {
                 const av = a[_procSortCol]; const bv = b[_procSortCol];
@@ -10078,17 +10148,17 @@ function showProcContextMenu(e, pid) {
     ctxMenu.setAttribute('role', 'menu');                  // a11y-9
     ctxMenu.setAttribute('aria-label', 'Process options');
     ctxMenu.innerHTML = `
-      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procSelectPid(${pid}); hideCtxMenu();">📋 Show details</div>
-      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procToggleWatch(${pid}); hideCtxMenu();">${isWatched ? '★ Unwatch' : '☆ Add to watchlist'}</div>
-      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionCopyCmd(${pid}); hideCtxMenu();">📄 Copy command line</div>
-      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionCopyJson(${pid}); hideCtxMenu();">📋 Copy as JSON</div>
-      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionOpenLocation(${escHtml(JSON.stringify(proc.exe_path || ''))}); hideCtxMenu();">📁 Open file location</div>
-      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionPriority(${pid}); hideCtxMenu();">⚙ Set priority…</div>
-      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionAffinity(${pid}); hideCtxMenu();">🎚 Set CPU affinity…</div>
-      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionSuspend(${pid}); hideCtxMenu();">⏸ Suspend</div>
-      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionResume(${pid}); hideCtxMenu();">▶ Resume</div>
-      <div class="ctx-item danger" role="menuitem" tabindex="-1" onclick="confirmKillProcess(${pid}, ${safeName}); hideCtxMenu();">⏹ Kill process</div>
-      <div class="ctx-item danger" role="menuitem" tabindex="-1" onclick="confirmKillProcessTree(${pid}, ${safeName}); hideCtxMenu();">💀 Kill process tree…</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procSelectPid(${pid}); hideCtxMenu();"><svg class="ico" aria-hidden="true"><use href="#i-search"/></svg>Show details</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procToggleWatch(${pid}); hideCtxMenu();"><svg class="ico" aria-hidden="true"><use href="#i-star"/></svg>${isWatched ? 'Unwatch' : 'Add to watchlist'}</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionCopyCmd(${pid}); hideCtxMenu();"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg>Copy command line</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionCopyJson(${pid}); hideCtxMenu();"><svg class="ico" aria-hidden="true"><use href="#i-code"/></svg>Copy as JSON</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionOpenLocation(${escHtml(JSON.stringify(proc.exe_path || ''))}); hideCtxMenu();"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg>Open file location</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionPriority(${pid}); hideCtxMenu();"><svg class="ico" aria-hidden="true"><use href="#i-settings"/></svg>Set priority…</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionAffinity(${pid}); hideCtxMenu();"><svg class="ico" aria-hidden="true"><use href="#i-columns"/></svg>Set CPU affinity…</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionSuspend(${pid}); hideCtxMenu();"><svg class="ico" aria-hidden="true"><use href="#i-pause"/></svg>Suspend</div>
+      <div class="ctx-item" role="menuitem" tabindex="-1" onclick="procActionResume(${pid}); hideCtxMenu();"><svg class="ico" aria-hidden="true"><use href="#i-play"/></svg>Resume</div>
+      <div class="ctx-item danger" role="menuitem" tabindex="-1" onclick="confirmKillProcess(${pid}, ${safeName}); hideCtxMenu();"><svg class="ico" aria-hidden="true"><use href="#i-stop"/></svg>Kill process</div>
+      <div class="ctx-item danger" role="menuitem" tabindex="-1" onclick="confirmKillProcessTree(${pid}, ${safeName}); hideCtxMenu();"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>Kill process tree…</div>
     `;
     ctxMenu.style.display = 'block';
     ctxMenu.style.left = e.pageX + 'px';

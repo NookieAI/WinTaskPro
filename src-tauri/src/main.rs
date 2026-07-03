@@ -705,7 +705,11 @@ try {{
 }} catch {{ '[]' }}
 "#,
         path = task_path.replace('\'', "''"),
-        max  = max_records,
+        // Clamp before it reaches the script: `($max * 2)` would overflow
+        // PowerShell's [int] (or request an absurd event count) for a hostile /
+        // buggy IPC value like 2_000_000_000. Numeric, so not injection — but a
+        // DoS / cryptic-failure vector the get_task_history path already guards.
+        max  = max_records.clamp(1, 1000),
     );
 
     // CREATE_NO_WINDOW (0x08000000) suppresses the brief console flash that
@@ -835,7 +839,7 @@ try {{
 }} catch {{
   Write-Output '[]'
 }}
-"#, filter = filter_inner, where = where_clause, max = max_records);
+"#, filter = filter_inner, where = where_clause, max = max_records.clamp(1, 1000));
 
     use std::os::windows::process::CommandExt;
     let output = Command::new("powershell")
@@ -1307,7 +1311,7 @@ fn get_processes(state: State<AppState>) -> Result<Vec<ProcessInfo>, String> {
                 cpu_usage:      process.cpu_usage(),
                 mem_working_kb: mem_working / 1024,
                 mem_private_kb: mem_virtual / 1024,
-                threads:        process.tasks().map(|t| t.len() as u32).unwrap_or(0),
+                threads:        0, // filled from toolhelp snapshot below; sysinfo's tasks() is always None on Windows, so computing it here was dead work in the hot path (250+ procs/refresh)
                 handles:        0, // populated below
                 start_time,
                 run_secs,
@@ -3522,15 +3526,19 @@ fn main() {
             // of the generic taskbar icon; without one, the window's own icon is
             // used for the taskbar button.
 
-            let show_item = MenuItem::with_id(app, "show", "🪟 Open WinTaskPro", true, None::<&str>)?;
+            // Native Windows tray menus render plain text most cleanly — no emoji.
+            let show_item = MenuItem::with_id(app, "show", "Open WinTaskPro", true, None::<&str>)?;
             let sep       = PredefinedMenuItem::separator(app)?;
-            let quit_item = MenuItem::with_id(app, "quit", "❌ Quit", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu      = Menu::with_items(app, &[&show_item, &sep, &quit_item])?;
 
-            let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon()
-                    .expect("App icon not found")
-                    .clone())
+            // ROBUSTNESS: the tray icon was previously `.expect("App icon not
+            // found")`, which panics the whole app during setup if the embedded
+            // icon resource is missing/unreadable (corrupted build, resource
+            // stripping, some AV-modified binaries). Everything else in setup is
+            // fault-tolerant; degrade gracefully here too — build the tray with
+            // its default icon rather than aborting the process with no window.
+            let mut tray_builder = TrayIconBuilder::new()
                 .tooltip("WinTaskPro — Windows Task Scheduler")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -3552,8 +3560,11 @@ fn main() {
                             let _ = w.set_focus();
                         }
                     }
-                })
-                .build(app)?;
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            }
+            let _tray = tray_builder.build(app)?;
 
             if let Some(win) = app.get_webview_window("main") {
                 let app_handle = win.app_handle().clone();

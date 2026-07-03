@@ -530,7 +530,7 @@ function fpShowDriftDetail(path) {
       </div>
     </div>`).join('');
   const pj = escHtml(JSON.stringify(path));
-  openModal(`🛡 Definition changes — ${escHtml(f.name)}`,
+  openModal(`🛡 Definition changes — ${f.name}`,
     `<div class="fp-diff-wrap">
        <div class="fp-hint" style="margin-top:0">Baseline captured ${escHtml(f.base.ts)}.</div>
        ${rows}
@@ -859,7 +859,17 @@ function fpParseBundle(text) {
     const headerLine = chunk.slice(0, nl).trim();
     const xml = chunk.slice(nl + 1).replace(/\s+$/, '');
     const tab = headerLine.indexOf('\t');
-    if (tab === -1) continue;
+    // A genuine task block is "<folder>\t<name>\n<xml…>" — the header has a tab
+    // and the body is XML (starts with "<"). If a task's own Description or
+    // Arguments contained a line beginning "### TASK ", the split would fire
+    // mid-XML and this "chunk" won't match that shape. Rather than drop it (or
+    // emit a corrupt task), fold it back onto the previous block's XML so the
+    // marker survives round-trip. Backward-compatible with existing backups.
+    const looksLikeHeader = tab !== -1 && /^\s*</.test(xml);
+    if (!looksLikeHeader) {
+      if (out.length) out[out.length - 1].xml += '\n### TASK ' + chunk.replace(/\s+$/, '');
+      continue;
+    }
     const folder = headerLine.slice(0, tab).trim() || '\\';
     const name = headerLine.slice(tab + 1).trim();
     if (name && xml) out.push({ folder, name, xml });
@@ -868,7 +878,7 @@ function fpParseBundle(text) {
 }
 
 function fpOpenBackupRestore() {
-  openModal('💾 Backup &amp; Restore Tasks',
+  openModal('💾 Backup & Restore Tasks',
     `<div class="fp-backup-modal">
        <div class="fp-backup-section">
          <div class="fp-backup-h">Backup</div>
