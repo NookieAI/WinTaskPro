@@ -1,4 +1,0 @@
-// Embed the application manifest for UAC elevation and DPI awareness.
-// No VERSIONINFO block here — tauri-build already generates one.
-// RT_MANIFEST = 24, CREATEPROCESS_MANIFEST_RESOURCE_ID = 1
-1 24 "app.manifest"
