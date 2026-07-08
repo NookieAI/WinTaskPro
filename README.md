@@ -1,5 +1,8 @@
 # WinTaskPro
 
+[![Latest Release](https://img.shields.io/github/v/release/NookieAI/WinTaskPro?label=latest&color=2ea44f)](https://github.com/NookieAI/WinTaskPro/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/NookieAI/WinTaskPro/total?color=2ea44f)](https://github.com/NookieAI/WinTaskPro/releases)
+
 A modern, dark-themed manager for the Windows Task Scheduler — view, create, edit,
 run and monitor every scheduled task (including hidden system tasks) from one clean UI.
 
